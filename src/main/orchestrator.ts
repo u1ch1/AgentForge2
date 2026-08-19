@@ -33,10 +33,13 @@ import { ensureRepo, snapshot } from './git-snapshot'
 /**
  * Конвейер: одна задача на входе — готовый проверенный проект на выходе.
  *
- * Admin разбивает задачу на подзадачи, пользователь утверждает план (это
- * единственная остановка), дальше воркеры пишут код, он сохраняется в файлы
- * проекта, Тестер прогоняет реальную сборку, и при провале ошибки возвращаются
- * воркеру на исправление.
+ * Analyst первым оценивает задачу в процентах (довезёт ли конвейер до
+ * результата, какую долю объёма закроет сам) — пользователь решает, делать
+ * задачу вообще или нет. Если да, Admin разбивает её на подзадачи, и
+ * пользователь утверждает план — это две остановки конвейера, обе гейты
+ * (`awaiting_analysis`, `awaiting_plan`). Дальше воркеры пишут код, он
+ * сохраняется в файлы проекта, Тестер прогоняет реальную сборку, и при
+ * провале ошибки возвращаются воркеру на исправление — без остановок.
  *
  * Живёт в main-процессе намеренно: renderer перерисовывается, переключает
  * проекты и панели — конвейер не должен от этого умирать.
@@ -44,6 +47,8 @@ import { ensureRepo, snapshot } from './git-snapshot'
 
 export type PipelineStatus =
   | 'idle'
+  | 'analyzing'
+  | 'awaiting_analysis'
   | 'planning'
   | 'awaiting_plan'
   | 'working'
@@ -58,6 +63,16 @@ export type PipelineStatus =
   | 'interrupted'
 
 export type Assignee = 'frontend' | 'backend'
+
+export interface PipelineAnalysis {
+  /** 0-100: вероятность довести задачу до рабочего результата этим составом. */
+  feasibility: number
+  /** 0-100: какую долю объёма задачи конвейер закроет своими силами. */
+  coverage: number
+  /** Конкретные пункты нехватки — доступы, интеграции, ручная работа. */
+  missing: string[]
+  summary: string
+}
 
 export interface PipelineSubtask {
   id: string
@@ -84,6 +99,8 @@ export interface PipelineRun {
   stack: string
   subtasks: PipelineSubtask[]
   log: LogEntry[]
+  /** Оценка Analyst до начала работ — вероятность успеха и чего не хватает. */
+  analysis: PipelineAnalysis | null
   /** Итог последнего прогона проверок — то, на основании чего выносится вердикт. */
   checks: { ran: boolean; passed: boolean; summary: string } | null
   /** Итог «подними и постучись»: работает ли приложение, а не только компилируется. */
@@ -108,8 +125,10 @@ const MAX_LOG_ENTRIES = 500
 const RUNS_FILE = 'pipeline.json'
 
 /** Статусы, при которых конвейер реально что-то делает прямо сейчас. */
-const BUSY: PipelineStatus[] = ['planning', 'working', 'verifying', 'fixing']
+const BUSY: PipelineStatus[] = ['analyzing', 'planning', 'working', 'verifying', 'fixing']
 const FINAL: PipelineStatus[] = ['done', 'unverified', 'failed', 'stopped', 'interrupted']
+/** Гейты — прогон ждёт решения пользователя и переживает перезапуск приложения. */
+const GATES: PipelineStatus[] = ['awaiting_analysis', 'awaiting_plan']
 
 /** projectId -> последний прогон этого проекта. */
 type RunsFile = Record<string, PipelineRun>
@@ -125,8 +144,9 @@ let stopRequested = false
  * работы, помечается прерванным: показывать «выполняется» для того, что уже
  * никто не выполняет, — прямая ложь пользователю.
  *
- * Исключение — `awaiting_plan`: план уже оплачен и лежит целиком, гейт можно
- * пройти и после перезапуска, поэтому такой прогон восстанавливается живым.
+ * Исключение — гейты (`awaiting_analysis`, `awaiting_plan`): ответ уже
+ * оплачен и лежит целиком, гейт можно пройти и после перезапуска, поэтому
+ * такой прогон восстанавливается живым.
  */
 function loadRuns(): RunsFile {
   if (store) return store
@@ -146,7 +166,7 @@ function loadRuns(): RunsFile {
       dirty = true
       continue
     }
-    if (r.status === 'awaiting_plan') {
+    if (GATES.includes(r.status)) {
       if (!resumable || r.startedAt > resumable.startedAt) resumable = r
     }
   }
@@ -261,6 +281,141 @@ async function callAgent(
 /** Останавливает конвейер, если деньги кончились: автономный цикл иначе выжжет бюджет. */
 function budgetExhausted(): boolean {
   return getDailyUsage() >= getDailyBudget()
+}
+
+// ---------------------------------------------------------------------------
+// Анализ выполнимости от Analyst
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_INSTRUCTION = `## Формат этого ответа
+
+Сейчас ты работаешь в автоматическом конвейере, на самом первом его шаге —
+до Admin и до плана. Конвейер умеет: Admin планирует и координирует,
+Worker1 — фронтенд и клиент, Worker2 — бэкенд, БД и инфраструктура,
+Tester прогоняет сборку/тесты и проверяет качество, Designer правит
+оформление уже поднятого приложения. За пределы кода в папке проекта (живые
+переговоры, юридическое сопровождение, реальные деньги, физические действия,
+доступы и учётные записи в сторонних сервисах) конвейер не выходит.
+
+Оцени, сможет ли эта команда выполнить задачу ниже. Ответь ТОЛЬКО
+JSON-объектом, без пояснений до и после, без markdown-ограды, строго такой
+структуры:
+
+{
+  "feasibility": 0-100,
+  "coverage": 0-100,
+  "missing": ["конкретный пункт того, чего не хватает"],
+  "summary": "короткое обоснование в 2-4 предложения"
+}
+
+Правила:
+- feasibility — вероятность довести задачу до рабочего результата без
+  критических провалов;
+- coverage — сколько процентов объёма самой задачи конвейер реально закроет
+  своими силами (остальное — то, что придётся делать не конвейеру);
+- missing — конкретные пункты, а не общие фразы; пустой массив, если нехватки нет;
+- если задача полностью в возможностях конвейера, feasibility и coverage — 100,
+  missing — пустой массив.`
+
+interface RawAnalysis {
+  feasibility?: unknown
+  coverage?: unknown
+  missing?: unknown
+  summary?: unknown
+}
+
+/** Число в проценты 0..100 — модель может прислать строку или дробь. */
+function clampPct(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(100, Math.round(n)))
+}
+
+function parseAnalysis(text: string): PipelineAnalysis | null {
+  const json = extractJson(text)
+  if (!json) return null
+
+  let raw: RawAnalysis
+  try {
+    raw = JSON.parse(json) as RawAnalysis
+  } catch {
+    return null
+  }
+  if (raw.feasibility === undefined || raw.coverage === undefined) return null
+
+  const missing = Array.isArray(raw.missing)
+    ? raw.missing.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map((m) => m.trim())
+    : []
+
+  return {
+    feasibility: clampPct(raw.feasibility),
+    coverage: clampPct(raw.coverage),
+    missing,
+    summary: typeof raw.summary === 'string' ? raw.summary.trim() : '',
+  }
+}
+
+/** Сырой JSON анализа в чате нечитаем — показываем разметкой, её чат уже умеет. */
+function renderAnalysis(a: PipelineAnalysis): string {
+  const lines = [
+    '## Анализ выполнимости',
+    '',
+    `**Выполнимость:** ${a.feasibility}%`,
+    `**Покрытие задачи конвейером:** ${a.coverage}%`,
+  ]
+  if (a.summary) lines.push('', a.summary)
+  if (a.missing.length > 0) {
+    lines.push('', '**Не хватает:**')
+    a.missing.forEach((m) => lines.push(`- ${m}`))
+  }
+  return lines.join('\n')
+}
+
+async function doAnalysis(goal: string): Promise<boolean> {
+  setStatus('analyzing')
+  log('info', 'Аналитик оценивает выполнимость задачи', 'analyst')
+
+  const context = buildProjectContext({
+    keywords: goal.split(/\s+/),
+    projectId: run?.projectId,
+  })
+  const extra = context ? `${context}\n\n${ANALYSIS_INSTRUCTION}` : ANALYSIS_INSTRUCTION
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const reply = await callAgent('analyst', goal, extra, false)
+    if (reply.error) {
+      log('err', `Ошибка запроса к Analyst: ${reply.error}`, 'analyst')
+      return false
+    }
+    const analysis = parseAnalysis(reply.text)
+    if (analysis && run) {
+      run.analysis = analysis
+      appendMessage(
+        'analyst',
+        {
+          id: `p-analysis-${Date.now()}`,
+          sender: 'agent',
+          text: renderAnalysis(analysis),
+          timestamp: Date.now(),
+        } as StoredMessage,
+        run.projectId
+      )
+      log(
+        'ok',
+        `Анализ готов: выполнимость ${analysis.feasibility}%, покрытие ${analysis.coverage}%`,
+        'analyst'
+      )
+      return true
+    }
+    log(
+      'err',
+      attempt === 1
+        ? 'Analyst вернул не JSON — повторяю запрос'
+        : 'Analyst повторно вернул не JSON, анализ не построен',
+      'analyst'
+    )
+  }
+  return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,10 +1265,11 @@ export function startPipeline(goal: string): PipelineRun | null {
     id: `run-${Date.now()}`,
     projectId: getActiveProjectId(),
     goal: text,
-    status: 'planning',
+    status: 'analyzing',
     stack: '',
     subtasks: [],
     log: [],
+    analysis: null,
     checks: null,
     runtime: null,
     design: null,
@@ -1126,17 +1282,40 @@ export function startPipeline(goal: string): PipelineRun | null {
   }
   emit()
 
-  void (async () => {
-    const ok = await doPlanning(text)
-    if (!run) return
-    if (stopRequested) return setStatus('stopped')
-    if (!ok) return setStatus('failed')
-    // Единственная остановка конвейера: план дешевле поправить здесь,
-    // чем разбирать десяток файлов, написанных не по тому плану.
-    setStatus('awaiting_plan')
-  })().catch((e: unknown) => fatal(e))
+  void runAnalysisStage(text).catch((e: unknown) => fatal(e))
 
   return run
+}
+
+async function runAnalysisStage(goal: string): Promise<void> {
+  const ok = await doAnalysis(goal)
+  if (!run) return
+  if (stopRequested) return setStatus('stopped')
+  if (!ok) return setStatus('failed')
+  // Первая остановка конвейера: пользователь решает, делать задачу вообще
+  // или нет, по оценке Analyst — до того, как Admin потратит запрос на план.
+  setStatus('awaiting_analysis')
+}
+
+async function runPlanningStage(goal: string): Promise<void> {
+  const ok = await doPlanning(goal)
+  if (!run) return
+  if (stopRequested) return setStatus('stopped')
+  if (!ok) return setStatus('failed')
+  // Вторая (и последняя) остановка конвейера: план дешевле поправить здесь,
+  // чем разбирать десяток файлов, написанных не по тому плану.
+  setStatus('awaiting_plan')
+}
+
+/** Согласие пользователя делать задачу — оценка Analyst принята, дальше идёт Admin. */
+export function approveAnalysis(): void {
+  const target = getRun()
+  if (!target || target.status !== 'awaiting_analysis') return
+  if (run && run !== target && BUSY.includes(run.status)) return
+
+  stopRequested = false
+  run = target
+  void runPlanningStage(run.goal).catch((e: unknown) => fatal(e))
 }
 
 /** Утверждение плана пользователем — возможно с правками из интерфейса. */
@@ -1277,11 +1456,11 @@ export function stopPipeline(): void {
   shutdownPipeline()
 
   // На гейте цикл не крутится, флаг заметить некому — закрываем прогон сами,
-  // иначе окно плана нечем отменить и оно возвращается после перезапуска.
+  // иначе окно гейта нечем отменить и оно возвращается после перезапуска.
   const target = getRun()
-  if (target && target.status === 'awaiting_plan') {
+  if (target && GATES.includes(target.status)) {
     run = target
-    log('info', 'План отклонён')
+    log('info', target.status === 'awaiting_analysis' ? 'Задача отклонена после анализа' : 'План отклонён')
     setStatus('stopped')
   }
 }
@@ -1298,6 +1477,7 @@ export function registerPipelineIPC(windowGetter: () => BrowserWindow | null): v
     return getRun()
   })
   ipcMain.handle('pipeline:get', () => getRun())
+  ipcMain.handle('pipeline:approveAnalysis', () => approveAnalysis())
   ipcMain.handle('pipeline:approve', (_e: IpcMainInvokeEvent, edited?: PipelineSubtask[]) =>
     approvePlan(edited)
   )

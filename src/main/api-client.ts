@@ -121,6 +121,16 @@ const STATIC_MODELS: ModelInfo[] = [
 
 export const DEFAULT_AGENTS: AgentConfig[] = [
   {
+    id: 'analyst',
+    name: 'Analyst',
+    role: 'Анализ выполнимости',
+    icon: 'search',
+    model: 'moonshot-v1-32k',
+    heavyModel: 'claude-sonnet-5',
+    systemPromptPath: '.claude/agents/analyst-agent.md',
+    mode: 'auto',
+  },
+  {
     id: 'admin',
     name: 'Admin',
     role: 'Координатор',

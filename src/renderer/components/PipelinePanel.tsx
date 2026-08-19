@@ -12,6 +12,8 @@ interface PipelinePanelProps {
 
 const STATUS_LABEL: Record<PipelineStatus, string> = {
   idle: 'Ожидание',
+  analyzing: 'Аналитик оценивает задачу…',
+  awaiting_analysis: 'Ждёт решения: делать или нет',
   planning: 'Admin составляет план…',
   awaiting_plan: 'План ждёт утверждения',
   working: 'Воркеры пишут код…',
@@ -24,7 +26,15 @@ const STATUS_LABEL: Record<PipelineStatus, string> = {
   interrupted: 'Прервано перезапуском',
 }
 
-const ACTIVE: PipelineStatus[] = ['planning', 'awaiting_plan', 'working', 'verifying', 'fixing']
+const ACTIVE: PipelineStatus[] = [
+  'analyzing',
+  'awaiting_analysis',
+  'planning',
+  'awaiting_plan',
+  'working',
+  'verifying',
+  'fixing',
+]
 
 function statusColor(status: PipelineStatus): string {
   if (status === 'done') return ps.ok
@@ -43,6 +53,7 @@ function subtaskColor(status: PipelineSubtask['status']): string {
 }
 
 const AGENT_LABEL: Record<string, string> = {
+  analyst: 'Analyst',
   admin: 'Admin',
   frontend: 'Worker1',
   backend: 'Worker2',

@@ -232,6 +232,8 @@ export interface WorkspaceInfo {
 
 export type PipelineStatus =
   | 'idle'
+  | 'analyzing'
+  | 'awaiting_analysis'
   | 'planning'
   | 'awaiting_plan'
   | 'working'
@@ -259,6 +261,13 @@ export interface PipelineLogEntry {
   text: string
 }
 
+export interface PipelineAnalysis {
+  feasibility: number
+  coverage: number
+  missing: string[]
+  summary: string
+}
+
 export interface PipelineRun {
   id: string
   projectId: string
@@ -267,6 +276,7 @@ export interface PipelineRun {
   stack: string
   subtasks: PipelineSubtask[]
   log: PipelineLogEntry[]
+  analysis: PipelineAnalysis | null
   checks: { ran: boolean; passed: boolean; summary: string } | null
   runtime: { ran: boolean; ok: boolean; summary: string } | null
   design: { before: number; after: number | null } | null
@@ -419,6 +429,7 @@ export interface ElectronAPI {
   // Конвейер: задача → план → воркеры → проверка
   pipelineStart: (goal: string) => Promise<PipelineRun | null>
   pipelineGet: () => Promise<PipelineRun | null>
+  pipelineApproveAnalysis: () => Promise<void>
   pipelineApprove: (edited?: PipelineSubtask[]) => Promise<void>
   pipelineStop: () => Promise<void>
   onPipelineUpdate: (cb: (run: PipelineRun | null) => void) => () => void
@@ -549,6 +560,7 @@ const api: ElectronAPI = {
 
   pipelineStart: (goal) => ipcRenderer.invoke('pipeline:start', goal),
   pipelineGet: () => ipcRenderer.invoke('pipeline:get'),
+  pipelineApproveAnalysis: () => ipcRenderer.invoke('pipeline:approveAnalysis'),
   pipelineApprove: (edited) => ipcRenderer.invoke('pipeline:approve', edited),
   pipelineStop: () => ipcRenderer.invoke('pipeline:stop'),
   onPipelineUpdate: (cb) => {

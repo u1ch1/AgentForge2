@@ -8,6 +8,7 @@ import PanelChrome from './components/PanelChrome'
 import ChatPanel from './components/ChatPanel'
 import PipelinePanel from './components/PipelinePanel'
 import PlanApproval from './components/PlanApproval'
+import AnalysisApproval from './components/AnalysisApproval'
 import EconomyAlert from './components/EconomyAlert'
 import AgentsPanel from './components/AgentsPanel'
 import TasksPanel from './components/TasksPanel'
@@ -568,6 +569,10 @@ export default function App() {
     [keyStatus, notify]
   )
 
+  const handlePipelineApproveAnalysis = useCallback(async () => {
+    await window.electronAPI.pipelineApproveAnalysis()
+  }, [])
+
   const handlePipelineApprove = useCallback(async (subtasks: PipelineSubtask[]) => {
     await window.electronAPI.pipelineApprove(subtasks)
   }, [])
@@ -998,6 +1003,20 @@ export default function App() {
             }
             onConfirm={() => void handleCloseProject()}
             onCancel={() => setDialog('none')}
+          />
+        </Modal>
+      )}
+
+      {pipeline?.status === 'awaiting_analysis' && (
+        <Modal
+          title="Аналитик — делать или нет?"
+          onClose={() => void handlePipelineStop()}
+          width={520}
+        >
+          <AnalysisApproval
+            run={pipeline}
+            onApprove={() => void handlePipelineApproveAnalysis()}
+            onReject={() => void handlePipelineStop()}
           />
         </Modal>
       )}

@@ -140,6 +140,8 @@ export interface ProjectContext {
 
 export type PipelineStatus =
   | 'idle'
+  | 'analyzing'
+  | 'awaiting_analysis'
   | 'planning'
   | 'awaiting_plan'
   | 'working'
@@ -169,6 +171,16 @@ export interface PipelineLogEntry {
   text: string
 }
 
+export interface PipelineAnalysis {
+  /** 0-100: вероятность довести задачу до рабочего результата этим составом. */
+  feasibility: number
+  /** 0-100: какую долю объёма задачи конвейер закроет своими силами. */
+  coverage: number
+  /** Конкретные пункты нехватки — доступы, интеграции, ручная работа. */
+  missing: string[]
+  summary: string
+}
+
 export interface PipelineRun {
   id: string
   projectId: string
@@ -177,6 +189,8 @@ export interface PipelineRun {
   stack: string
   subtasks: PipelineSubtask[]
   log: PipelineLogEntry[]
+  /** Оценка Analyst до начала работ — вероятность успеха и чего не хватает. */
+  analysis: PipelineAnalysis | null
   checks: { ran: boolean; passed: boolean; summary: string } | null
   /** Итог «подними и постучись»: работает ли приложение, а не только компилируется. */
   runtime: { ran: boolean; ok: boolean; summary: string } | null
@@ -204,7 +218,7 @@ export function providerForModel(model: string): 'claude' | 'kimi' {
 
 /** Иконка агента с запасным вариантом, если в конфиге неизвестное имя. */
 export function agentIcon(name: string): IconName {
-  const known: IconName[] = ['target', 'layout', 'server', 'bug']
+  const known: IconName[] = ['target', 'layout', 'server', 'bug', 'search']
   return known.includes(name as IconName) ? (name as IconName) : 'move'
 }
 
