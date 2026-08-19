@@ -6,6 +6,7 @@
   "license": "MIT",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "test": "vitest run",
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
@@ -25,7 +26,8 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

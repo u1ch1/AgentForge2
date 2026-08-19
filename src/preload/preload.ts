@@ -1,4 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron'
+import type {
+  PipelineStatus,
+  PipelineSubtask,
+  PipelineLogEntry,
+  PipelineAnalysis,
+  PipelineRun,
+} from '../shared/pipeline'
+
+export type { PipelineStatus, PipelineSubtask, PipelineLogEntry, PipelineAnalysis, PipelineRun }
 
 // ---------------------------------------------------------------------------
 // Типы, общие для main и renderer
@@ -228,64 +237,6 @@ export interface PreviewStartResult {
 export interface WorkspaceInfo {
   workspace: string
   data: string
-}
-
-export type PipelineStatus =
-  | 'idle'
-  | 'analyzing'
-  | 'awaiting_analysis'
-  | 'planning'
-  | 'awaiting_plan'
-  | 'working'
-  | 'verifying'
-  | 'fixing'
-  | 'done'
-  | 'unverified'
-  | 'failed'
-  | 'stopped'
-  | 'interrupted'
-
-export interface PipelineSubtask {
-  id: string
-  title: string
-  description: string
-  assignee: 'frontend' | 'backend'
-  status: 'pending' | 'in_progress' | 'done' | 'failed'
-  files: string[]
-}
-
-export interface PipelineLogEntry {
-  at: number
-  kind: 'info' | 'ok' | 'err'
-  agent?: string
-  text: string
-}
-
-export interface PipelineAnalysis {
-  feasibility: number
-  coverage: number
-  missing: string[]
-  summary: string
-}
-
-export interface PipelineRun {
-  id: string
-  projectId: string
-  goal: string
-  status: PipelineStatus
-  stack: string
-  subtasks: PipelineSubtask[]
-  log: PipelineLogEntry[]
-  analysis: PipelineAnalysis | null
-  checks: { ran: boolean; passed: boolean; summary: string } | null
-  runtime: { ran: boolean; ok: boolean; summary: string } | null
-  design: { before: number; after: number | null } | null
-  screenshot: string | null
-  review: { critical: string[]; text: string } | null
-  fixAttempts: number
-  taskId: string | null
-  startedAt: number
-  finishedAt: number | null
 }
 
 export interface ElectronAPI {

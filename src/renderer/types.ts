@@ -1,4 +1,13 @@
 import type { IconName } from './icons'
+import type {
+  PipelineStatus,
+  PipelineSubtask,
+  PipelineLogEntry,
+  PipelineAnalysis,
+  PipelineRun,
+} from '../shared/pipeline'
+
+export type { PipelineStatus, PipelineSubtask, PipelineLogEntry, PipelineAnalysis, PipelineRun }
 
 export interface Agent {
   id: string
@@ -136,74 +145,6 @@ export interface ProjectContext {
   envVars: string[]
   notes: string
   lastUpdated: string
-}
-
-export type PipelineStatus =
-  | 'idle'
-  | 'analyzing'
-  | 'awaiting_analysis'
-  | 'planning'
-  | 'awaiting_plan'
-  | 'working'
-  | 'verifying'
-  | 'fixing'
-  | 'done'
-  /** Код написан, но проверить его было нечем — это не успех и не провал. */
-  | 'unverified'
-  | 'failed'
-  | 'stopped'
-  /** Прогон оборвался вместе с приложением. */
-  | 'interrupted'
-
-export interface PipelineSubtask {
-  id: string
-  title: string
-  description: string
-  assignee: 'frontend' | 'backend'
-  status: 'pending' | 'in_progress' | 'done' | 'failed'
-  files: string[]
-}
-
-export interface PipelineLogEntry {
-  at: number
-  kind: 'info' | 'ok' | 'err'
-  agent?: string
-  text: string
-}
-
-export interface PipelineAnalysis {
-  /** 0-100: вероятность довести задачу до рабочего результата этим составом. */
-  feasibility: number
-  /** 0-100: какую долю объёма задачи конвейер закроет своими силами. */
-  coverage: number
-  /** Конкретные пункты нехватки — доступы, интеграции, ручная работа. */
-  missing: string[]
-  summary: string
-}
-
-export interface PipelineRun {
-  id: string
-  projectId: string
-  goal: string
-  status: PipelineStatus
-  stack: string
-  subtasks: PipelineSubtask[]
-  log: PipelineLogEntry[]
-  /** Оценка Analyst до начала работ — вероятность успеха и чего не хватает. */
-  analysis: PipelineAnalysis | null
-  checks: { ran: boolean; passed: boolean; summary: string } | null
-  /** Итог «подними и постучись»: работает ли приложение, а не только компилируется. */
-  runtime: { ran: boolean; ok: boolean; summary: string } | null
-  /** Оформление: сколько замечаний было и сколько осталось после дизайнера. */
-  design: { before: number; after: number | null } | null
-  /** Снимок готовой страницы. */
-  screenshot: string | null
-  /** Замечания Тестера: critical блокирует приёмку наравне с падением сборки. */
-  review: { critical: string[]; text: string } | null
-  fixAttempts: number
-  taskId: string | null
-  startedAt: number
-  finishedAt: number | null
 }
 
 /** Worker1/Worker2 — их чат показывает только код (с автосохранением в проект), без прозы и промптов. */
