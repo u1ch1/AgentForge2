@@ -406,6 +406,7 @@ export interface ElectronAPI {
   // Конвейер: задача → план → воркеры → проверка
   pipelineStart: (goal: string) => Promise<PipelineRun | null>
   pipelineGet: () => Promise<PipelineRun | null>
+  pipelineGetHistory: () => Promise<PipelineRun[]>
   pipelineAnswerClarification: (answer: string) => Promise<void>
   pipelineApproveAnalysis: () => Promise<void>
   pipelineApprove: (edited?: PipelineSubtask[]) => Promise<void>
@@ -540,6 +541,7 @@ const api: ElectronAPI = {
 
   pipelineStart: (goal) => ipcRenderer.invoke('pipeline:start', goal),
   pipelineGet: () => ipcRenderer.invoke('pipeline:get'),
+  pipelineGetHistory: () => ipcRenderer.invoke('pipeline:getHistory'),
   pipelineAnswerClarification: (answer) => ipcRenderer.invoke('pipeline:answerClarification', answer),
   pipelineApproveAnalysis: () => ipcRenderer.invoke('pipeline:approveAnalysis'),
   pipelineApprove: (edited) => ipcRenderer.invoke('pipeline:approve', edited),

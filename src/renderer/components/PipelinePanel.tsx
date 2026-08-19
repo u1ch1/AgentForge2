@@ -220,6 +220,8 @@ export default function PipelinePanel({ run, projectName, onStart, onStop }: Pip
         </button>
 
         {run && run.log.length > 0 && <LogView run={run} />}
+
+        <RunHistory />
       </div>
     )
   }
@@ -384,6 +386,77 @@ function LogView({ run, grow }: { run: PipelineRun; grow?: boolean }) {
           {e.text}
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Прошлые прогоны этого проекта — `pipeline.json` хранит только последний,
+ * а прежние решения Analyst, планы Admin и логи иначе исчезали бы бесследно
+ * при каждом новом запуске конвейера на том же проекте.
+ */
+function RunHistory() {
+  const [open, setOpen] = useState(false)
+  const [history, setHistory] = useState<PipelineRun[] | null>(null)
+  const [selected, setSelected] = useState<PipelineRun | null>(null)
+
+  const toggle = async () => {
+    const next = !open
+    setOpen(next)
+    if (next && history === null) setHistory(await window.electronAPI.pipelineGetHistory())
+  }
+
+  return (
+    <div style={{ marginTop: '4px' }}>
+      <button onClick={() => void toggle()} style={{ ...button, fontSize: '10px' }}>
+        <Icon name="tree" size={11} />
+        История прогонов{history && history.length > 0 ? ` (${history.length})` : ''}
+      </button>
+
+      {open && (
+        <div style={{ ...well, marginTop: '5px', maxHeight: '160px', overflowY: 'auto' }}>
+          {history === null ? (
+            <div style={{ padding: '8px', fontSize: '10px', color: ps.textFaint }}>Загрузка…</div>
+          ) : history.length === 0 ? (
+            <div style={{ padding: '8px', fontSize: '10px', color: ps.textFaint }}>
+              Прошлых прогонов ещё нет — появятся после первого завершённого.
+            </div>
+          ) : (
+            [...history].reverse().map((r) => (
+              <div
+                key={r.id}
+                onClick={() => setSelected(r)}
+                style={{
+                  padding: '6px 8px',
+                  borderBottom: `1px solid ${ps.border}`,
+                  cursor: 'pointer',
+                  background: selected?.id === r.id ? ps.active : 'transparent',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px' }}>
+                  <StatusDot color={statusColor(r.status)} />
+                  <span style={{ color: statusColor(r.status) }}>{STATUS_LABEL[r.status]}</span>
+                  <span style={{ color: ps.textFaint, marginLeft: 'auto' }}>
+                    {new Date(r.startedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <div style={{ fontSize: '10px', color: ps.textDim, marginTop: '2px' }}>
+                  {r.goal.length > 90 ? r.goal.slice(0, 90) + '…' : r.goal}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {selected && (
+        <div style={{ marginTop: '5px' }}>
+          <div style={{ fontSize: '10px', color: ps.textFaint, marginBottom: '3px' }}>
+            Лог прогона от {new Date(selected.startedAt).toLocaleString('ru-RU')}
+          </div>
+          <LogView run={selected} />
+        </div>
+      )}
     </div>
   )
 }

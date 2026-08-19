@@ -84,6 +84,9 @@ const MAX_FIX_ATTEMPTS = 3
 const MAX_LOG_ENTRIES = 500
 
 const RUNS_FILE = 'pipeline.json'
+const HISTORY_FILE = 'pipeline-history.json'
+/** Не больше стольких прошлых прогонов на проект — дальше старые вытесняются новыми. */
+const MAX_HISTORY_PER_PROJECT = 10
 
 /** Статусы, при которых конвейер реально что-то делает прямо сейчас. */
 const BUSY: PipelineStatus[] = ['analyzing', 'planning', 'working', 'verifying', 'fixing']
@@ -140,6 +143,39 @@ function loadRuns(): RunsFile {
 /** Прогон нужного проекта (по умолчанию — активного). */
 export function getRun(projectId?: string): PipelineRun | null {
   return loadRuns()[projectId ?? getActiveProjectId()] ?? null
+}
+
+/** projectId -> прошлые (завершённые) прогоны этого проекта, старые первыми. */
+type HistoryFile = Record<string, PipelineRun[]>
+
+let history: HistoryFile | null = null
+
+function loadHistory(): HistoryFile {
+  if (!history) history = loadJson<HistoryFile>(HISTORY_FILE, {})
+  return history
+}
+
+/**
+ * Уносит прогон проекта в историю перед тем, как его заменят новым —
+ * `pipeline.json` всегда хранит только последний прогон, а без этого
+ * решение Analyst, план Admin и лог предыдущего заказа исчезали бы
+ * бесследно в момент запуска следующего.
+ */
+function archiveIfFinal(projectId: string): void {
+  const prior = loadRuns()[projectId]
+  if (!prior || !FINAL.includes(prior.status)) return
+
+  const h = loadHistory()
+  const list = h[projectId] ?? []
+  list.push(prior)
+  if (list.length > MAX_HISTORY_PER_PROJECT) list.shift()
+  h[projectId] = list
+  saveJson(HISTORY_FILE, h)
+}
+
+/** Прошлые прогоны проекта, новые последними — для панели истории. */
+export function getRunHistory(projectId?: string): PipelineRun[] {
+  return loadHistory()[projectId ?? getActiveProjectId()] ?? []
 }
 
 function persist(): void {
@@ -843,6 +879,13 @@ async function doVerify(): Promise<Verdict> {
       : 'Автоматических проверок нет — вердикт только по ревью',
     'tester'
   )
+  // Раньше падение сборки было видно только как «падает», а сам текст ошибки
+  // оставался в run.checks.summary, невидимый в логе. Если правки за три
+  // попытки не хватит и понадобится ручная правка — это единственное место,
+  // где видно, что именно сломалось, без похода в терминал.
+  if (report.ran && !report.passed) {
+    log('err', report.summary.slice(-1500), 'tester')
+  }
 
   // Поднимать неработающую сборку бессмысленно: сначала должно компилироваться.
   let runtime: RuntimeReport | null = null
@@ -1137,10 +1180,13 @@ export function startPipeline(goal: string): PipelineRun | null {
   // но npm-процессы и бюджет — общие, параллелить их нечем.
   if (run && BUSY.includes(run.status)) return run
 
+  const projectId = getActiveProjectId()
+  archiveIfFinal(projectId)
+
   stopRequested = false
   run = {
     id: `run-${Date.now()}`,
-    projectId: getActiveProjectId(),
+    projectId,
     goal: text,
     status: 'analyzing',
     stack: '',
@@ -1434,6 +1480,7 @@ export function registerPipelineIPC(windowGetter: () => BrowserWindow | null): v
     return getRun()
   })
   ipcMain.handle('pipeline:get', () => getRun())
+  ipcMain.handle('pipeline:getHistory', () => getRunHistory())
   ipcMain.handle('pipeline:answerClarification', (_e: IpcMainInvokeEvent, answer: string) =>
     answerClarification(answer)
   )

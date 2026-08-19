@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { PipelineRun, PipelineSubtask } from '../types'
 import { ps, fonts, input, button, buttonPrimary, well } from '../theme'
 import { Icon } from '../icons'
@@ -14,6 +14,20 @@ const ASSIGNEES: { id: 'frontend' | 'backend'; label: string }[] = [
   { id: 'backend', label: 'Worker2 · Backend' },
 ]
 
+interface AgentUsage {
+  cost: number
+  messageCount: number
+}
+
+/** Пока по этому исполнителю нет истории расхода — грубый ориентир, чтобы цифра не была пустой. */
+const FALLBACK_COST_PER_SUBTASK = 0.05
+
+/** Средний расход на один вызов агента — по его же прошлым сообщениям в этой сессии. */
+function averageCost(agents: Record<string, AgentUsage>, agentId: string): number | null {
+  const u = agents[agentId]
+  return u && u.messageCount > 0 ? u.cost / u.messageCount : null
+}
+
 /**
  * Единственная остановка конвейера. Ошибка в плане стоит одного запроса,
  * ошибка в коде по кривому плану — десятка файлов и прогона сборки, поэтому
@@ -21,6 +35,31 @@ const ASSIGNEES: { id: 'frontend' | 'backend'; label: string }[] = [
  */
 export default function PlanApproval({ run, onApprove, onCancel }: PlanApprovalProps) {
   const [items, setItems] = useState<PipelineSubtask[]>(run.subtasks)
+  const [estimate, setEstimate] = useState<{ value: number; roughly: boolean } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const session = await window.electronAPI.getSessionUsage()
+      const avgFrontend = averageCost(session.agents, 'frontend')
+      const avgBackend = averageCost(session.agents, 'backend')
+      let value = 0
+      let roughly = false
+      for (const s of items) {
+        const avg = s.assignee === 'frontend' ? avgFrontend : avgBackend
+        if (avg === null) {
+          roughly = true
+          value += FALLBACK_COST_PER_SUBTASK
+        } else {
+          value += avg
+        }
+      }
+      if (!cancelled) setEstimate(items.length > 0 ? { value, roughly } : null)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [items])
 
   const patch = (id: string, changes: Partial<PipelineSubtask>) =>
     setItems((prev) => prev.map((s) => (s.id === id ? { ...s, ...changes } : s)))
@@ -44,6 +83,15 @@ export default function PlanApproval({ run, onApprove, onCancel }: PlanApprovalP
         {run.stack && (
           <div style={{ fontSize: '10px', color: ps.accentHover, marginTop: '5px' }}>
             Стек: {run.stack}
+          </div>
+        )}
+        {estimate && (
+          <div style={{ fontSize: '10px', color: ps.textFaint, marginTop: '5px' }}>
+            Ориентировочно ≈ ${estimate.value.toFixed(2)} за прогон
+            {estimate.roughly
+              ? ' (мало истории по исполнителю — грубая прикидка)'
+              : ' (по среднему прошлому расходу за подзадачу)'}
+            , без учёта возможных исправлений
           </div>
         )}
       </div>
