@@ -68,6 +68,7 @@ export interface AppSettings {
   chatShowTimestamps: boolean
   chatShowModelBadge: boolean
   chatSound: boolean
+  previewAutoStart: boolean
 }
 
 export interface ModelInfo {

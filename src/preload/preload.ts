@@ -121,6 +121,7 @@ export interface AppSettings {
   chatShowTimestamps: boolean
   chatShowModelBadge: boolean
   chatSound: boolean
+  previewAutoStart: boolean
 }
 
 export interface Subtask {
@@ -400,6 +401,7 @@ export interface ElectronAPI {
   previewGetUrl: () => Promise<{ url: string | null }>
   previewGetLogs: () => Promise<{ logs: string[] }>
   previewRunChecks: () => Promise<PreviewCheckResult>
+  previewOpenWindow: () => Promise<{ success: boolean; error?: string }>
 
   // Конвейер: задача → план → воркеры → проверка
   pipelineStart: (goal: string) => Promise<PipelineRun | null>
@@ -534,6 +536,7 @@ const api: ElectronAPI = {
   previewGetUrl: () => ipcRenderer.invoke('preview:getUrl'),
   previewGetLogs: () => ipcRenderer.invoke('preview:getLogs'),
   previewRunChecks: () => ipcRenderer.invoke('preview:runChecks'),
+  previewOpenWindow: () => ipcRenderer.invoke('preview:openWindow'),
 
   pipelineStart: (goal) => ipcRenderer.invoke('pipeline:start', goal),
   pipelineGet: () => ipcRenderer.invoke('pipeline:get'),

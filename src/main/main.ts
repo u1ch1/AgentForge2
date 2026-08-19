@@ -11,7 +11,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { getWorkspaceDir, setWorkspaceDir, getDataDir } from './paths'
 import { seedWorkspace } from './file-manager'
-import { registerAPIIPC, loadPersistedKeys, refreshSystemPrompt } from './api-client'
+import { registerAPIIPC, loadPersistedKeys, refreshSystemPrompt, getSettings } from './api-client'
 import { registerProjectsIPC, getProjectDir, getActiveProject } from './projects'
 import { registerChatIPC } from './chat-store'
 import { registerFileOpsIPC } from './file-ops'
@@ -176,8 +176,11 @@ if (!app.requestSingleInstanceLock()) {
     // кнопкой «Старт» в «Просмотре», просто без клика. Молча, без ошибок в
     // UI: у половины проектов нет package.json или он ещё не собран, это не
     // повод показывать баннер при каждом открытии приложения — кнопка
-    // «Старт» остаётся и покажет причину, если понадобится.
-    void startPreview('.').catch(() => undefined)
+    // «Старт» остаётся и покажет причину, если понадобится. Выключается в
+    // Настройках (previewAutoStart) — не всем нужен лишний процесс в фоне.
+    if (getSettings().previewAutoStart) {
+      void startPreview('.').catch(() => undefined)
+    }
 
     createWindow()
 

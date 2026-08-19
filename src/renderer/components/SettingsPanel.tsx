@@ -4,6 +4,7 @@ import { providerForModel, agentIcon } from '../types'
 import { ps, fonts, input, select, button, buttonPrimary, notice, well } from '../theme'
 import { GroupLabel, Row } from './PanelChrome'
 import { Icon, StatusDot } from '../icons'
+import { Toggle } from './ChatSettingsMenu'
 
 const KIMI_ENDPOINTS = [
   { value: 'https://api.moonshot.ai/v1', label: 'api.moonshot.ai — международный' },
@@ -292,6 +293,18 @@ export default function SettingsPanel({
           <Icon name="refresh" size={12} />
           Обнулить счётчик
         </button>
+      </div>
+
+      <GroupLabel>Просмотр</GroupLabel>
+      <Row label="Автозапуск при старте приложения">
+        <Toggle
+          checked={settings.previewAutoStart}
+          onChange={(v) => void onUpdateSettings({ previewAutoStart: v })}
+        />
+      </Row>
+      <div style={{ padding: '0 8px 10px', color: ps.textDisabled, fontSize: '10px', lineHeight: 1.6 }}>
+        Поднимать <span style={{ fontFamily: fonts.mono }}>npm run dev</span> активного проекта
+        сразу при запуске приложения — панель «Просмотр» покажет результат без нажатия «Старт».
       </div>
 
       <GroupLabel>Рабочая папка</GroupLabel>

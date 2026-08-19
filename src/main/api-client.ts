@@ -57,6 +57,8 @@ export interface AppSettings {
   chatShowTimestamps: boolean
   chatShowModelBadge: boolean
   chatSound: boolean
+  /** Поднимать ли npm run dev активного проекта автоматически при запуске приложения. */
+  previewAutoStart: boolean
 }
 
 const SETTINGS_FILE = 'app-settings.json'
@@ -72,6 +74,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   chatShowTimestamps: true,
   chatShowModelBadge: true,
   chatSound: false,
+  previewAutoStart: true,
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +204,7 @@ let settings: AppSettings | null = null
 const systemPromptCache = new Map<string, string>()
 const activeRequests = new Map<string, AbortController>()
 
-function getSettings(): AppSettings {
+export function getSettings(): AppSettings {
   if (!settings) settings = { ...DEFAULT_SETTINGS, ...loadJson<Partial<AppSettings>>(SETTINGS_FILE, {}) }
   return settings
 }
@@ -495,18 +498,28 @@ type StreamEvent =
 
 async function* streamClaude(
   model: string,
-  systemPrompt: string,
+  /** Промпт агента + память проекта — меняется редко, кэшируется отдельным блоком. */
+  base: string,
+  /** Контекст конкретного запроса (файлы проекта, задание конвейера) — почти всегда
+   *  новый, поэтому не кэшируется: попади он в тот же блок, что и base, склеенный
+   *  текст менялся бы каждый раз и кэш промахивался бы всегда, а не только тогда,
+   *  когда это оправдано. */
+  extra: string | undefined,
   messages: ChatMessage[],
   signal: AbortSignal
 ): AsyncGenerator<StreamEvent> {
   const anthropic = getClaudeClient()
+
   const stream = anthropic.messages.stream(
     {
       model,
       max_tokens: 16000,
-      // cache_control на системном промпте: он большой и стабильный, повторные
-      // запросы читают его из кэша примерно за 10% цены.
-      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      system: extra
+        ? [
+            { type: 'text', text: base, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: extra },
+          ]
+        : [{ type: 'text', text: base, cache_control: { type: 'ephemeral' } }],
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     },
     { signal }
@@ -639,11 +652,10 @@ export async function* streamChat(
     }
 
     const base = getCachedSystemPrompt(agentId, agent.systemPromptPath)
-    const systemPrompt = extraSystem ? `${base}\n\n${extraSystem}` : base
     const generator =
       provider === 'claude'
-        ? streamClaude(model, systemPrompt, messages, controller.signal)
-        : streamKimi(model, systemPrompt, messages, controller.signal)
+        ? streamClaude(model, base, extraSystem, messages, controller.signal)
+        : streamKimi(model, extraSystem ? `${base}\n\n${extraSystem}` : base, messages, controller.signal)
 
     let inputTokens = 0
     let outputTokens = 0

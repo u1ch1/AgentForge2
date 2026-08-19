@@ -79,6 +79,8 @@ export interface PipelineRun {
   design: { before: number; after: number | null } | null
   /** Снимок готовой страницы — путь в данных приложения, не в папке проекта. */
   screenshot: string | null
+  /** Последние несколько снимков подряд (старые первыми) — мини-таймлайн проверки. */
+  screenshotHistory: string[]
   /** Замечания Тестера: critical блокирует приёмку наравне с падением сборки. */
   review: { critical: string[]; text: string } | null
   fixAttempts: number

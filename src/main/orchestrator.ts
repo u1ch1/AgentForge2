@@ -1,4 +1,5 @@
 import { ipcMain, IpcMainInvokeEvent, BrowserWindow } from 'electron'
+import * as fs from 'fs'
 import * as path from 'path'
 import {
   streamChat,
@@ -754,6 +755,13 @@ function screenshotPathFor(projectId: string): string {
   return path.join(getDataDir(), 'previews', `${projectId}.png`)
 }
 
+/** Не больше стольких кадров в мини-истории — дальше старые вытесняются новыми. */
+const SCREENSHOT_HISTORY_SIZE = 4
+
+function screenshotHistoryDir(): string {
+  return path.join(getDataDir(), 'previews', 'history')
+}
+
 /** Результат приёмки: сборка, работающее приложение и ревью Тестера. */
 interface Verdict {
   report: CheckReport
@@ -787,10 +795,27 @@ function onRuntimeProgress(e: RuntimeProgressEvent): void {
         'tester'
       )
       break
-    case 'screenshot':
+    case 'screenshot': {
       run.screenshot = e.path
+      // Мини-история — удобство, а не гарантия: любая ошибка диска здесь не
+      // должна останавливать саму проверку.
+      try {
+        const dir = screenshotHistoryDir()
+        fs.mkdirSync(dir, { recursive: true })
+        const histPath = path.join(dir, `${run.projectId}-${Date.now()}.png`)
+        fs.copyFileSync(e.path, histPath)
+        const history = [...run.screenshotHistory, histPath]
+        while (history.length > SCREENSHOT_HISTORY_SIZE) {
+          const removed = history.shift()
+          if (removed) fs.rm(removed, () => undefined)
+        }
+        run.screenshotHistory = history
+      } catch {
+        /* история не сложилась — не мешаем проверке */
+      }
       emit()
       break
+    }
     case 'design_start':
       log('info', 'Дизайнер получил замечания по вёрстке', 'designer')
       break
@@ -1082,15 +1107,24 @@ async function doFix(v: Verdict): Promise<boolean> {
 // Управление
 // ---------------------------------------------------------------------------
 
+/**
+ * Проверяется из нескольких параллельных цепочек подзадач одновременно
+ * (см. runAssigneeQueue) — без проверки на терминальный статус каждая из них
+ * продублировала бы и лог, и emit() в момент остановки.
+ */
 function shouldStop(): boolean {
   if (stopRequested) {
-    log('info', 'Остановлено пользователем')
-    setStatus('stopped')
+    if (run && !FINAL.includes(run.status)) {
+      log('info', 'Остановлено пользователем')
+      setStatus('stopped')
+    }
     return true
   }
   if (budgetExhausted()) {
-    log('err', 'Достигнут дневной лимит расходов — конвейер остановлен')
-    setStatus('failed')
+    if (run && !FINAL.includes(run.status)) {
+      log('err', 'Достигнут дневной лимит расходов — конвейер остановлен')
+      setStatus('failed')
+    }
     return true
   }
   return false
@@ -1118,11 +1152,18 @@ export function startPipeline(goal: string): PipelineRun | null {
     runtime: null,
     design: null,
     screenshot: null,
+    screenshotHistory: [],
     review: null,
     fixAttempts: 0,
     taskId: null,
     startedAt: Date.now(),
     finishedAt: null,
+  }
+  // Чистый лист на новый прогон — иначе кадры прошлых запусков копятся на диске.
+  try {
+    fs.rmSync(screenshotHistoryDir(), { recursive: true, force: true })
+  } catch {
+    /* не критично: максимум несколько лишних PNG на диске */
   }
   emit()
 
@@ -1257,6 +1298,37 @@ async function takeSnapshot(message: string): Promise<void> {
   }
 }
 
+/**
+ * Очередь поверх takeSnapshot: подзадачи разных исполнителей пишут файлы
+ * параллельно (см. runAssigneeQueue), а `git commit` параллельным не бывает —
+ * два одновременных снимка гонялись бы за одним и тем же index.lock. Каждый
+ * вызов встаёт в хвост, выполняется, только когда предыдущий закончился.
+ */
+let snapshotQueue: Promise<void> = Promise.resolve()
+function queueSnapshot(message: string): Promise<void> {
+  const next = snapshotQueue.then(() => takeSnapshot(message)).catch(() => undefined)
+  snapshotQueue = next
+  return next
+}
+
+/**
+ * Подзадачи одного исполнителя выполняются по порядку плана (внутри своей
+ * зоны ответственности порядок может быть важен — например, сперва схема БД,
+ * потом эндпоинт). А вот Worker1 и Worker2 друг от друга обычно не зависят —
+ * Admin и так делит между ними фронт и бэк, — поэтому их очереди подзадач
+ * идут параллельно, а не одна за другой.
+ */
+async function runAssigneeQueue(assignee: Assignee): Promise<void> {
+  if (!run) return
+  for (const sub of run.subtasks) {
+    if (sub.assignee !== assignee) continue
+    if (shouldStop()) return
+    if (sub.status === 'done') continue
+    const ok = await doSubtask(sub)
+    if (ok) await queueSnapshot(`feat: ${sub.title}`)
+  }
+}
+
 async function runRemainder(): Promise<void> {
   if (!run) return
   setStatus('working')
@@ -1264,17 +1336,12 @@ async function runRemainder(): Promise<void> {
   const repo = await ensureRepo(run.projectId)
   if (repo.ok && repo.created) {
     log('info', 'Папка проекта под git: после каждого шага делается снимок')
-    await takeSnapshot('chore: состояние до запуска конвейера')
+    await queueSnapshot('chore: состояние до запуска конвейера')
   } else if (!repo.ok) {
     log('info', `Снимки истории недоступны: ${repo.message ?? 'git не найден'}`)
   }
 
-  for (const sub of run.subtasks) {
-    if (shouldStop()) return
-    if (sub.status === 'done') continue
-    const ok = await doSubtask(sub)
-    if (ok) await takeSnapshot(`feat: ${sub.title}`)
-  }
+  await Promise.all([runAssigneeQueue('frontend'), runAssigneeQueue('backend')])
 
   if (shouldStop()) return
 
@@ -1282,7 +1349,7 @@ async function runRemainder(): Promise<void> {
   while (needsFix(verdict) && run && run.fixAttempts < MAX_FIX_ATTEMPTS) {
     if (shouldStop()) return
     const fixed = await doFix(verdict)
-    if (fixed) await takeSnapshot(`fix: правка ${run?.fixAttempts ?? 0}`)
+    if (fixed) await queueSnapshot(`fix: правка ${run?.fixAttempts ?? 0}`)
     if (!fixed) break
     if (shouldStop()) return
     verdict = await doVerify()
@@ -1297,7 +1364,7 @@ async function runRemainder(): Promise<void> {
   // Установка зависимостей и сборка создают файлы, которых не было на момент
   // последнего снимка (package-lock.json и подобные). Без этого проект уезжает
   // к пользователю с незакоммиченными изменениями прямо из коробки.
-  await takeSnapshot('chore: состояние после проверок')
+  await queueSnapshot('chore: состояние после проверок')
   if (verdict.report.ran && !verdict.report.passed) {
     log('err', 'Сборка так и не проходит — нужна ручная правка')
     return setStatus('failed')

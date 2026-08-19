@@ -118,6 +118,13 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
               <Icon name="refresh" size={12} />
             </button>
             <button
+              onClick={() => void window.electronAPI.previewOpenWindow()}
+              style={{ ...button, width: '24px', padding: 0 }}
+              title="Развернуть в отдельном окне"
+            >
+              <Icon name="external" size={12} />
+            </button>
+            <button
               onClick={async () => {
                 await window.electronAPI.previewStop()
                 setUrl(null)
@@ -183,6 +190,11 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
           <webview
             ref={webviewRef}
             src={url}
+            // Явно, а не по умолчанию — той же строкой, какой в runtime-check.ts
+            // уже описан скрытый BrowserWindow (nodeIntegration:false,
+            // contextIsolation:true). allowpopups не указан — по умолчанию
+            // выключен, окна-попапы из dev-сервера открываться не будут.
+            webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes"
             style={{
               flex: 1,
               width: '100%',

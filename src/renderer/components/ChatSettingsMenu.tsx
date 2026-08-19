@@ -9,7 +9,7 @@ interface ChatSettingsMenuProps {
 }
 
 /** Тумблер вместо нативного чекбокса — в духе плотных панелей Photoshop. */
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button
       onClick={() => onChange(!checked)}

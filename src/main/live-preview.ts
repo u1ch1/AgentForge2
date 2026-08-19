@@ -1,4 +1,4 @@
-import { ipcMain, IpcMainInvokeEvent } from 'electron'
+import { ipcMain, IpcMainInvokeEvent, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -9,6 +9,8 @@ import { runRuntimeCheck } from './runtime-check'
 let devServer: ChildProcess | null = null
 let serverUrl: string | null = null
 let logs: string[] = []
+/** Окно-попап «Просмотра» — на весь экран проекта, отдельно от тесной боковой панели. */
+let popoutWindow: BrowserWindow | null = null
 
 const MAX_LOG_LINES = 200
 const STARTUP_TIMEOUT_MS = 30_000
@@ -56,6 +58,37 @@ export function stopPreview(): void {
     devServer = null
   }
   serverUrl = null
+}
+
+/**
+ * Открывает текущий адрес «Просмотра» в отдельном полноразмерном окне —
+ * тесная боковая панель годится для беглого взгляда, а не для того, чтобы
+ * реально пользоваться приложением. Повторный вызов не плодит окна:
+ * существующее просто выходит на передний план.
+ */
+export function openPreviewWindow(): { success: boolean; error?: string } {
+  if (!serverUrl) return { success: false, error: 'Просмотр не запущен' }
+
+  if (popoutWindow && !popoutWindow.isDestroyed()) {
+    popoutWindow.focus()
+    return { success: true }
+  }
+
+  popoutWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    title: 'AgentForge Studio — Просмотр',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  })
+  popoutWindow.on('closed', () => {
+    popoutWindow = null
+  })
+  void popoutWindow.loadURL(serverUrl)
+  return { success: true }
 }
 
 function guessPort(dir: string, pkg: { dependencies?: Record<string, string> }): number {
@@ -178,6 +211,7 @@ export function registerLivePreviewIPC(): void {
 
   ipcMain.handle('preview:getUrl', () => ({ url: devServer ? serverUrl : null }))
   ipcMain.handle('preview:getLogs', () => ({ logs: [...logs] }))
+  ipcMain.handle('preview:openWindow', () => openPreviewWindow())
 
   // Проверка «подними и постучись» по требованию, отдельно от конвейера: без
   // сценария и дизайнера (это работа агентов, а ручная проверка не должна

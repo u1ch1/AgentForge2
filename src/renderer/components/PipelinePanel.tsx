@@ -38,6 +38,52 @@ const ACTIVE: PipelineStatus[] = [
   'fixing',
 ]
 
+/** Стадии конвейера для визуальной дорожки — статусы группируются по тому, чья сейчас очередь. */
+const STAGES: { label: string; statuses: PipelineStatus[] }[] = [
+  { label: 'Analyst', statuses: ['analyzing', 'awaiting_clarification', 'awaiting_analysis'] },
+  { label: 'Admin', statuses: ['planning', 'awaiting_plan'] },
+  { label: 'Воркеры', statuses: ['working'] },
+  { label: 'Тестер', statuses: ['verifying', 'fixing'] },
+  { label: 'Готово', statuses: ['done', 'unverified', 'failed', 'stopped', 'interrupted'] },
+]
+
+function stageIndex(status: PipelineStatus): number {
+  const idx = STAGES.findIndex((s) => s.statuses.includes(status))
+  return idx === -1 ? 0 : idx
+}
+
+function StageTracker({ status }: { status: PipelineStatus }) {
+  const current = stageIndex(status)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', marginTop: '7px' }}>
+      {STAGES.map((stage, i) => {
+        const isCurrent = i === current
+        const isPast = i < current
+        const color = isCurrent ? statusColor(status) : isPast ? ps.ok : ps.textFaint
+        return (
+          <div key={stage.label} style={{ display: 'flex', alignItems: 'center', flex: i < STAGES.length - 1 ? 1 : undefined }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+              <span
+                style={{
+                  width: '7px',
+                  height: '7px',
+                  borderRadius: '50%',
+                  background: color,
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: '9px', color, whiteSpace: 'nowrap' }}>{stage.label}</span>
+            </div>
+            {i < STAGES.length - 1 && (
+              <div style={{ flex: 1, height: '1px', background: isPast ? ps.ok : ps.borderDark, margin: '0 4px 12px' }} />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function statusColor(status: PipelineStatus): string {
   if (status === 'done') return ps.ok
   if (status === 'failed') return ps.err
@@ -195,6 +241,7 @@ export default function PipelinePanel({ run, projectName, onStart, onStop }: Pip
           <StatusDot color={statusColor(run.status)} />
           {STATUS_LABEL[run.status]}
         </div>
+        <StageTracker status={run.status} />
         {run.subtasks.length > 0 && (
           <div style={{ fontSize: '10px', color: ps.textFaint, marginTop: '3px' }}>
             Подзадач: {done} из {run.subtasks.length}
@@ -202,6 +249,19 @@ export default function PipelinePanel({ run, projectName, onStart, onStop }: Pip
           </div>
         )}
       </div>
+
+      {run.screenshot && (
+        <div style={{ padding: '8px 10px', borderBottom: `1px solid ${ps.border}`, flexShrink: 0 }}>
+          <Preview path={run.screenshot} />
+          {run.screenshotHistory.length > 1 && (
+            <div style={{ display: 'flex', gap: '3px', marginTop: '5px' }}>
+              {run.screenshotHistory.map((p) => (
+                <Thumbnail key={p} path={p} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {run.subtasks.length > 0 && (
         <div style={{ maxHeight: '38%', overflowY: 'auto', flexShrink: 0 }}>
@@ -273,6 +333,31 @@ function Preview({ path }: { path: string }) {
         }}
       />
     </div>
+  )
+}
+
+/** Кадр мини-истории — та же механика, что у Preview, но без подписи и мельче. */
+function Thumbnail({ path }: { path: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
+
+  const url = `file:///${path.replace(/\\/g, '/')}?t=${Date.now()}`
+  return (
+    <img
+      src={url}
+      alt=""
+      onError={() => setFailed(true)}
+      style={{
+        height: '36px',
+        flex: 1,
+        minWidth: 0,
+        objectFit: 'cover',
+        display: 'block',
+        border: `1px solid ${ps.borderDark}`,
+        borderRadius: '2px',
+        background: ps.sunken,
+      }}
+    />
   )
 }
 

@@ -30,6 +30,10 @@ interface ChatPanelProps {
 
 const FONT_PX: Record<AppSettings['chatFontSize'], number> = { small: 11, medium: 12, large: 13.5 }
 
+/** Сколько последних сообщений рендерим сразу; более ранние — по кнопке. */
+const DEFAULT_RENDER_LIMIT = 200
+const RENDER_LIMIT_STEP = 200
+
 function timeOf(ts: number): string {
   return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
 }
@@ -198,6 +202,14 @@ export default function ChatPanel({
   // Worker1/Worker2: чат — лента кода, без промптов от Admin и без прозы вокруг него.
   const codeOnly = agent ? isCodeOnlyAgent(agent.id) : false
   const visibleMessages = codeOnly ? messages.filter((m) => m.sender === 'agent') : messages
+
+  // Долгий диалог (конвейер пишет много) не рендерим целиком — только хвост,
+  // а раньше показываем по запросу. Иначе прокрутка тяжёлого DOM-дерева
+  // начинает подтормаживать на давних проектах.
+  const [renderLimit, setRenderLimit] = useState(DEFAULT_RENDER_LIMIT)
+  useEffect(() => setRenderLimit(DEFAULT_RENDER_LIMIT), [agent?.id])
+  const hiddenCount = Math.max(0, visibleMessages.length - renderLimit)
+  const shownMessages = hiddenCount > 0 ? visibleMessages.slice(hiddenCount) : visibleMessages
 
   const evaluateBottom = () => {
     const el = scrollRef.current
@@ -384,12 +396,22 @@ export default function ChatPanel({
             </div>
           ) : (
             <div style={contentWidth}>
-              {visibleMessages.map((msg, i) => {
+              {hiddenCount > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0 10px' }}>
+                  <button
+                    onClick={() => setRenderLimit((n) => n + RENDER_LIMIT_STEP)}
+                    style={{ ...button, fontSize: '10px' }}
+                  >
+                    Показать более раннюю историю (+{Math.min(hiddenCount, RENDER_LIMIT_STEP)})
+                  </button>
+                </div>
+              )}
+              {shownMessages.map((msg, i) => {
                 const isUser = msg.sender === 'user'
-                const isLast = i === visibleMessages.length - 1
+                const isLast = i === shownMessages.length - 1
                 const rowVisible = hovered === msg.id || (isLast && !isStreaming)
                 const isEditing = editingId === msg.id
-                const hasFollowing = i < visibleMessages.length - 1
+                const hasFollowing = i < shownMessages.length - 1
                 const pathBlocks = codeOnly && !isUser ? parseCodeBlocks(msg.text).filter((b) => b.path) : []
 
                 return (

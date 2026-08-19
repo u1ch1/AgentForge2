@@ -139,6 +139,7 @@ export default function App() {
     chatShowTimestamps: true,
     chatShowModelBadge: true,
     chatSound: false,
+    previewAutoStart: true,
   })
   const [workspace, setWorkspace] = useState('')
   const [showEconomyAlert, setShowEconomyAlert] = useState(false)

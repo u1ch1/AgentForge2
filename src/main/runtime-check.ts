@@ -805,9 +805,12 @@ async function runScenario(
       const verdict = judgeStep(step, code)
       scenario.push({ step, ok: verdict.ok, detail: verdict.detail })
       opts.onProgress?.({ kind: 'step', index: i + 1, total: steps.length, description, ok: verdict.ok })
-      // Снимок после каждого шага — так видно, что происходило на странице по
-      // ходу сценария, а не только итоговый кадр.
-      await snapshotNow(contents, opts)
+      // Снимок только после действий, меняющих картинку: waitFor/expect* —
+      // чистая проверка, экран после них не отличается от того, что уже
+      // сняли на предыдущем шаге.
+      if (step.action === 'fill' || step.action === 'click') {
+        await snapshotNow(contents, opts)
+      }
       if (!verdict.ok) {
         findings.push({
           severity: verdict.severity,
