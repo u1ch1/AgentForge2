@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import type { ConsoleMessageEvent, WebviewTag } from 'electron'
 import { ps, fonts, input, button, buttonPrimary, notice, well } from '../theme'
 import { Icon, IconFilled } from '../icons'
-import type { PreviewCheckResult } from '../types'
+import type { PreviewCheckResult, BackendPreviewState } from '../types'
 
 interface LivePreviewProps {
   /** Пока конвейер занят, ручную проверку не запускаем — второй npm start по тому же проекту лишний. */
@@ -30,17 +30,27 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<PreviewCheckResult | null>(null)
 
+  // Бэкенд split-проекта (frontend/ + backend/) поднимается вместе с фронтендом
+  // сам — без этого любая страница с данными молча показывала "Failed to fetch",
+  // и надо было идти в отдельный терминал руками. backend === null, пока не
+  // опрошено ни разу; backend.dir === null, если рядом бэкенда просто нет.
+  const [backend, setBackend] = useState<BackendPreviewState | null>(null)
+  const [backendLogs, setBackendLogs] = useState<string[]>([])
+  const [showBackendLogs, setShowBackendLogs] = useState(false)
+
   useEffect(() => {
     const check = async () => {
       const res = await window.electronAPI.previewGetUrl()
       setUrl(res.url)
       setIsRunning(Boolean(res.url))
       if (showLogs) setLogs((await window.electronAPI.previewGetLogs()).logs)
+      setBackend(await window.electronAPI.previewGetBackendStatus())
+      if (showBackendLogs) setBackendLogs((await window.electronAPI.previewGetBackendLogs()).logs)
     }
     void check()
     const t = setInterval(() => void check(), 4000)
     return () => clearInterval(t)
-  }, [showLogs])
+  }, [showLogs, showBackendLogs])
 
   // <webview> — отдельный процесс рендеринга с полноценным webContents: тем
   // же способом runtime-check.ts уже читает консоль скрытого окна на стадии
@@ -129,6 +139,7 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
                 await window.electronAPI.previewStop()
                 setUrl(null)
                 setIsRunning(false)
+                setBackend(null)
               }}
               style={{ ...button, color: ps.err }}
             >
@@ -187,6 +198,7 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
               {showLogs ? 'скрыть лог' : 'лог'}
             </button>
           </div>
+          {backend?.dir && <BackendStatusLine backend={backend} showLogs={showBackendLogs} onToggleLogs={() => setShowBackendLogs((v) => !v)} />}
           <webview
             ref={webviewRef}
             src={url}
@@ -271,6 +283,25 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
         </pre>
       )}
 
+      {showBackendLogs && (
+        <pre
+          style={{
+            ...well,
+            margin: '0 8px 8px',
+            maxHeight: '150px',
+            overflow: 'auto',
+            padding: '6px 8px',
+            fontSize: '10px',
+            fontFamily: fonts.mono,
+            color: ps.textDim,
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.5,
+          }}
+        >
+          {backendLogs.length ? backendLogs.join('\n') : 'Лог бэкенда пуст'}
+        </pre>
+      )}
+
       <div style={{ borderTop: `1px solid ${ps.border}`, padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         <button
           onClick={() => void runChecks()}
@@ -305,6 +336,70 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+const BACKEND_STATUS_LABEL: Record<BackendPreviewState['status'], string> = {
+  idle: '',
+  starting: 'запускается…',
+  running: 'работает',
+  stopped: 'остановлен',
+  error: 'ошибка',
+}
+
+const BACKEND_STATUS_COLOR: Record<BackendPreviewState['status'], keyof typeof ps> = {
+  idle: 'textFaint',
+  starting: 'warn',
+  running: 'ok',
+  stopped: 'textFaint',
+  error: 'err',
+}
+
+/**
+ * Split-проект (frontend/ + backend/) — бэкенд конвейер поднимает сам, вместе
+ * с фронтендом, но у него нет своего <webview>: без данных с API любая
+ * страница молча показывает "Failed to fetch", и без этой строки было бы
+ * непонятно, что вообще происходит и куда смотреть.
+ */
+function BackendStatusLine({
+  backend,
+  showLogs,
+  onToggleLogs,
+}: {
+  backend: BackendPreviewState
+  showLogs: boolean
+  onToggleLogs: () => void
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '0 8px 6px',
+        fontSize: '10px',
+      }}
+    >
+      <span style={{ color: ps[BACKEND_STATUS_COLOR[backend.status]], display: 'flex' }}>
+        <Icon name="server" size={12} />
+      </span>
+      <span style={{ color: ps.textDim, flex: 1, fontFamily: fonts.mono }}>
+        Бэкенд ({backend.dir}){backend.error ? `: ${backend.error}` : `: ${BACKEND_STATUS_LABEL[backend.status]}`}
+      </span>
+      <button
+        onClick={onToggleLogs}
+        style={{
+          border: 'none',
+          background: 'transparent',
+          color: ps.textFaint,
+          fontSize: '10px',
+          cursor: 'pointer',
+          padding: 0,
+        }}
+      >
+        {showLogs ? 'скрыть лог' : 'лог'}
+      </button>
     </div>
   )
 }

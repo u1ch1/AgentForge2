@@ -243,6 +243,14 @@ export interface PreviewStartResult {
   error?: string
 }
 
+export type BackendPreviewStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error'
+
+export interface BackendPreviewState {
+  dir: string | null
+  status: BackendPreviewStatus
+  error: string | null
+}
+
 export interface PreviewCheckFinding {
   /** hard блокирует приёмку в конвейере, здесь — просто сильнее подсвечен. */
   severity: 'hard' | 'soft'
@@ -402,6 +410,8 @@ export interface ElectronAPI {
   previewGetLogs: () => Promise<{ logs: string[] }>
   previewRunChecks: () => Promise<PreviewCheckResult>
   previewOpenWindow: () => Promise<{ success: boolean; error?: string }>
+  previewGetBackendStatus: () => Promise<BackendPreviewState>
+  previewGetBackendLogs: () => Promise<{ logs: string[] }>
 
   // Конвейер: задача → план → воркеры → проверка
   pipelineStart: (goal: string) => Promise<PipelineRun | null>
@@ -538,6 +548,8 @@ const api: ElectronAPI = {
   previewGetLogs: () => ipcRenderer.invoke('preview:getLogs'),
   previewRunChecks: () => ipcRenderer.invoke('preview:runChecks'),
   previewOpenWindow: () => ipcRenderer.invoke('preview:openWindow'),
+  previewGetBackendStatus: () => ipcRenderer.invoke('preview:getBackendStatus'),
+  previewGetBackendLogs: () => ipcRenderer.invoke('preview:getBackendLogs'),
 
   pipelineStart: (goal) => ipcRenderer.invoke('pipeline:start', goal),
   pipelineGet: () => ipcRenderer.invoke('pipeline:get'),

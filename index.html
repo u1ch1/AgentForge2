@@ -6,12 +6,15 @@
     <!--
       Renderer не ходит в сеть напрямую: все вызовы API идут через IPC в main.
       Поэтому connect-src ограничен 'self', а внешние скрипты запрещены вовсе.
-      frame-src открыт только для localhost — это Live Preview.
+      frame-src открыт только для localhost — это Live Preview. [::1] нужен
+      отдельно от 127.0.0.1: на части Windows-машин dev-сервер (Vite и т.п.)
+      слушает только IPv6-loopback, и live-preview.ts подставляет туда адрес
+      в скобках явно, а не полагается на то, как ОС резолвит "localhost".
       'unsafe-inline' в style-src нужен для inline-стилей React (style={{…}}).
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src http://localhost:* http://127.0.0.1:* http://[::1]:*; object-src 'none'; base-uri 'none'"
     />
     <title>AgentForge Studio</title>
   </head>

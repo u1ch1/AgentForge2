@@ -16,6 +16,7 @@ import {
   type DeliveryKind,
 } from './code-context'
 import { runChecks, type CheckReport } from './command-runner'
+import { stopPreviewForProject } from './live-preview'
 import {
   runRuntimeCheck,
   stopRuntimeCheck,
@@ -864,6 +865,11 @@ function onRuntimeProgress(e: RuntimeProgressEvent): void {
 async function doVerify(): Promise<Verdict> {
   setStatus('verifying')
   log('info', 'Прогон сборки и тестов', 'tester')
+
+  // Ручной dev-сервер «Просмотра» может держать файлы того же проекта открытыми
+  // (esbuild.exe и т.п. на Windows) — если не остановить его здесь, npm ci
+  // ниже падает по EPERM, и конвейер тратит попытки на пустом месте.
+  if (run) stopPreviewForProject(run.projectId)
 
   const projectDir = run ? getProjectDir(run.projectId) : undefined
   const report = await runChecks(projectDir)

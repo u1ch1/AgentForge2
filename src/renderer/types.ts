@@ -7,7 +7,7 @@ import type {
   PipelineClarification,
   PipelineRun,
 } from '../shared/pipeline'
-import type { PreviewCheckResult, PreviewCheckFinding } from '../preload/preload'
+import type { PreviewCheckResult, PreviewCheckFinding, BackendPreviewState } from '../preload/preload'
 
 export type {
   PipelineStatus,
@@ -18,6 +18,7 @@ export type {
   PipelineRun,
   PreviewCheckResult,
   PreviewCheckFinding,
+  BackendPreviewState,
 }
 
 export interface Agent {
