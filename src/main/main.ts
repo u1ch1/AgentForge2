@@ -21,7 +21,7 @@ import { registerTemplateIPC } from './templates'
 import { registerMemoryIPC } from './project-memory'
 import { registerMCPIPC } from './mcp-server'
 import { registerDeployIPC } from './deploy'
-import { registerLivePreviewIPC, stopPreview } from './live-preview'
+import { registerLivePreviewIPC, stopPreview, startPreview } from './live-preview'
 import { registerPipelineIPC, shutdownPipeline } from './orchestrator'
 
 let mainWindow: BrowserWindow | null = null
@@ -59,6 +59,12 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
+      // Нужен панели «Просмотр»: <webview> встраивает dev-сервер пользователя
+      // отдельным процессом с полноценным webContents (консоль, capturePage),
+      // тем же способом, каким runtime-check.ts уже поднимает скрытый
+      // BrowserWindow для автоматической проверки. Риск тот же, что и у
+      // прежнего <iframe> на тот же локальный адрес.
+      webviewTag: true,
     },
   })
 
@@ -165,6 +171,13 @@ if (!app.requestSingleInstanceLock()) {
     registerDeployIPC(getWindow)
     registerLivePreviewIPC()
     registerPipelineIPC(getWindow)
+
+    // Автозапуск dev-сервера активного проекта — та же механика, что за
+    // кнопкой «Старт» в «Просмотре», просто без клика. Молча, без ошибок в
+    // UI: у половины проектов нет package.json или он ещё не собран, это не
+    // повод показывать баннер при каждом открытии приложения — кнопка
+    // «Старт» остаётся и покажет причину, если понадобится.
+    void startPreview('.').catch(() => undefined)
 
     createWindow()
 

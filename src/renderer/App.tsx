@@ -9,6 +9,7 @@ import ChatPanel from './components/ChatPanel'
 import PipelinePanel from './components/PipelinePanel'
 import PlanApproval from './components/PlanApproval'
 import AnalysisApproval from './components/AnalysisApproval'
+import ClarificationPrompt from './components/ClarificationPrompt'
 import EconomyAlert from './components/EconomyAlert'
 import AgentsPanel from './components/AgentsPanel'
 import TasksPanel from './components/TasksPanel'
@@ -70,6 +71,9 @@ async function saveWorkerCodeBlocks(
 type Tool = 'pipeline' | 'agents' | 'tasks' | 'templates' | 'fixes'
 type Panel = 'files' | 'prompts' | 'tokens' | 'preview' | 'memory' | 'deploy' | 'settings'
 type Dialog = 'none' | 'history' | 'newTask' | 'newProject' | 'about' | 'closeProject' | 'clearChat'
+
+/** Стадии, где конвейер реально гоняет npm-процессы — второй ручной прогон поверх них лишний. */
+const PIPELINE_BUSY_STATUSES: PipelineRun['status'][] = ['analyzing', 'planning', 'working', 'verifying', 'fixing']
 
 const TOOLS: RailItem<Tool>[] = [
   { id: 'pipeline', icon: 'play', title: 'Конвейер', badge: 'K' },
@@ -569,6 +573,10 @@ export default function App() {
     [keyStatus, notify]
   )
 
+  const handlePipelineAnswerClarification = useCallback(async (answer: string) => {
+    await window.electronAPI.pipelineAnswerClarification(answer)
+  }, [])
+
   const handlePipelineApproveAnalysis = useCallback(async () => {
     await window.electronAPI.pipelineApproveAnalysis()
   }, [])
@@ -760,7 +768,7 @@ export default function App() {
       case 'tokens':
         return <TokenTrackerPanel />
       case 'preview':
-        return <LivePreview />
+        return <LivePreview pipelineBusy={Boolean(pipeline && PIPELINE_BUSY_STATUSES.includes(pipeline.status))} />
       case 'memory':
         return <ProjectMemoryPanel />
       case 'deploy':
@@ -1003,6 +1011,16 @@ export default function App() {
             }
             onConfirm={() => void handleCloseProject()}
             onCancel={() => setDialog('none')}
+          />
+        </Modal>
+      )}
+
+      {pipeline?.status === 'awaiting_clarification' && (
+        <Modal title="Аналитик уточняет" onClose={() => void handlePipelineStop()} width={520}>
+          <ClarificationPrompt
+            run={pipeline}
+            onSubmit={(answer) => void handlePipelineAnswerClarification(answer)}
+            onCancel={() => void handlePipelineStop()}
           />
         </Modal>
       )}

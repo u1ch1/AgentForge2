@@ -4,6 +4,8 @@ import {
   clampPct,
   parseAnalysis,
   renderAnalysis,
+  parseAnalysisOutcome,
+  renderClarification,
   parsePlan,
   renderPlan,
   indexOfMention,
@@ -115,6 +117,43 @@ describe('renderAnalysis', () => {
   it('не пишет секцию нехватки, если missing пуст', () => {
     const text = renderAnalysis({ feasibility: 100, coverage: 100, missing: [], summary: '' })
     expect(text).not.toContain('Не хватает')
+  })
+})
+
+describe('parseAnalysisOutcome', () => {
+  it('распознаёт готовую оценку', () => {
+    const outcome = parseAnalysisOutcome(
+      JSON.stringify({ feasibility: 80, coverage: 70, missing: [], summary: 'Ок' })
+    )
+    expect(outcome).toEqual({
+      kind: 'analysis',
+      value: { feasibility: 80, coverage: 70, missing: [], summary: 'Ок' },
+    })
+  })
+
+  it('распознаёт запрос уточнения по форме {question}', () => {
+    const outcome = parseAnalysisOutcome(JSON.stringify({ question: '  Нужен веб или десктоп?  ' }))
+    expect(outcome).toEqual({ kind: 'clarification', value: { question: 'Нужен веб или десктоп?' } })
+  })
+
+  it('пустой question считается невалидным ответом', () => {
+    expect(parseAnalysisOutcome(JSON.stringify({ question: '   ' }))).toBeNull()
+  })
+
+  it('объект без question и без feasibility/coverage — null', () => {
+    expect(parseAnalysisOutcome(JSON.stringify({ summary: 'непонятно что' }))).toBeNull()
+  })
+
+  it('возвращает null, если JSON не найден', () => {
+    expect(parseAnalysisOutcome('простой текст без разметки')).toBeNull()
+  })
+})
+
+describe('renderClarification', () => {
+  it('оборачивает вопрос в заголовок', () => {
+    const text = renderClarification('Нужна ли оплата картой?')
+    expect(text).toContain('## Нужно уточнение')
+    expect(text).toContain('Нужна ли оплата картой?')
   })
 })
 

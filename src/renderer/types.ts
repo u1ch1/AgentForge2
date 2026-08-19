@@ -4,10 +4,21 @@ import type {
   PipelineSubtask,
   PipelineLogEntry,
   PipelineAnalysis,
+  PipelineClarification,
   PipelineRun,
 } from '../shared/pipeline'
+import type { PreviewCheckResult, PreviewCheckFinding } from '../preload/preload'
 
-export type { PipelineStatus, PipelineSubtask, PipelineLogEntry, PipelineAnalysis, PipelineRun }
+export type {
+  PipelineStatus,
+  PipelineSubtask,
+  PipelineLogEntry,
+  PipelineAnalysis,
+  PipelineClarification,
+  PipelineRun,
+  PreviewCheckResult,
+  PreviewCheckFinding,
+}
 
 export interface Agent {
   id: string

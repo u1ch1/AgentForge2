@@ -1,5 +1,13 @@
 import type { Assignee, PipelineAnalysis, PipelineSubtask } from '../shared/pipeline'
 
+export interface ClarificationRequest {
+  question: string
+}
+
+export type AnalysisOutcome =
+  | { kind: 'analysis'; value: PipelineAnalysis }
+  | { kind: 'clarification'; value: ClarificationRequest }
+
 /**
  * Разбор и форматирование текста, которым обмениваются агенты и конвейер —
  * вынесено из orchestrator.ts отдельно от всего, что требует сети, диска или
@@ -78,6 +86,40 @@ export function renderAnalysis(a: PipelineAnalysis): string {
     a.missing.forEach((m) => lines.push(`- ${m}`))
   }
   return lines.join('\n')
+}
+
+/**
+ * Разбирает ответ Analyst, который может быть либо готовой оценкой, либо
+ * просьбой уточнить задачу — вместо чисел модель вправе прислать один вопрос,
+ * если оценивать пока нечего.
+ *
+ * Различаем по форме: `{feasibility, coverage, ...}` — оценка, `{question}` —
+ * запрос уточнения. Валидация самой оценки не дублируется — переиспользуем
+ * parseAnalysis на полном тексте.
+ */
+export function parseAnalysisOutcome(text: string): AnalysisOutcome | null {
+  const json = extractJson(text)
+  if (!json) return null
+
+  let raw: RawAnalysis & { question?: unknown }
+  try {
+    raw = JSON.parse(json)
+  } catch {
+    return null
+  }
+
+  if (raw.feasibility === undefined && raw.coverage === undefined) {
+    const question = typeof raw.question === 'string' ? raw.question.trim() : ''
+    return question ? { kind: 'clarification', value: { question } } : null
+  }
+
+  const analysis = parseAnalysis(text)
+  return analysis ? { kind: 'analysis', value: analysis } : null
+}
+
+/** Вопрос Analyst в чате — той же разметкой, что и готовый анализ. */
+export function renderClarification(question: string): string {
+  return `## Нужно уточнение\n\n${question}`
 }
 
 interface RawPlan {

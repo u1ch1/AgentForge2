@@ -4,10 +4,18 @@ import type {
   PipelineSubtask,
   PipelineLogEntry,
   PipelineAnalysis,
+  PipelineClarification,
   PipelineRun,
 } from '../shared/pipeline'
 
-export type { PipelineStatus, PipelineSubtask, PipelineLogEntry, PipelineAnalysis, PipelineRun }
+export type {
+  PipelineStatus,
+  PipelineSubtask,
+  PipelineLogEntry,
+  PipelineAnalysis,
+  PipelineClarification,
+  PipelineRun,
+}
 
 // ---------------------------------------------------------------------------
 // Типы, общие для main и renderer
@@ -234,6 +242,21 @@ export interface PreviewStartResult {
   error?: string
 }
 
+export interface PreviewCheckFinding {
+  /** hard блокирует приёмку в конвейере, здесь — просто сильнее подсвечен. */
+  severity: 'hard' | 'soft'
+  text: string
+}
+
+/** Обрезанный результат ручной проверки «подними и постучись» — без сценария и мерок вёрстки. */
+export interface PreviewCheckResult {
+  ran: boolean
+  ok: boolean
+  findings: PreviewCheckFinding[]
+  screenshot: string | null
+  summary: string
+}
+
 export interface WorkspaceInfo {
   workspace: string
   data: string
@@ -376,10 +399,12 @@ export interface ElectronAPI {
   previewStop: () => Promise<{ success: boolean }>
   previewGetUrl: () => Promise<{ url: string | null }>
   previewGetLogs: () => Promise<{ logs: string[] }>
+  previewRunChecks: () => Promise<PreviewCheckResult>
 
   // Конвейер: задача → план → воркеры → проверка
   pipelineStart: (goal: string) => Promise<PipelineRun | null>
   pipelineGet: () => Promise<PipelineRun | null>
+  pipelineAnswerClarification: (answer: string) => Promise<void>
   pipelineApproveAnalysis: () => Promise<void>
   pipelineApprove: (edited?: PipelineSubtask[]) => Promise<void>
   pipelineStop: () => Promise<void>
@@ -508,9 +533,11 @@ const api: ElectronAPI = {
   previewStop: () => ipcRenderer.invoke('preview:stop'),
   previewGetUrl: () => ipcRenderer.invoke('preview:getUrl'),
   previewGetLogs: () => ipcRenderer.invoke('preview:getLogs'),
+  previewRunChecks: () => ipcRenderer.invoke('preview:runChecks'),
 
   pipelineStart: (goal) => ipcRenderer.invoke('pipeline:start', goal),
   pipelineGet: () => ipcRenderer.invoke('pipeline:get'),
+  pipelineAnswerClarification: (answer) => ipcRenderer.invoke('pipeline:answerClarification', answer),
   pipelineApproveAnalysis: () => ipcRenderer.invoke('pipeline:approveAnalysis'),
   pipelineApprove: (edited) => ipcRenderer.invoke('pipeline:approve', edited),
   pipelineStop: () => ipcRenderer.invoke('pipeline:stop'),

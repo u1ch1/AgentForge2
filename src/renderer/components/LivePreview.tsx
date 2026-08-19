@@ -1,8 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
+import type { ConsoleMessageEvent, WebviewTag } from 'electron'
 import { ps, fonts, input, button, buttonPrimary, notice, well } from '../theme'
 import { Icon, IconFilled } from '../icons'
+import type { PreviewCheckResult } from '../types'
 
-export default function LivePreview() {
+interface LivePreviewProps {
+  /** Пока конвейер занят, ручную проверку не запускаем — второй npm start по тому же проекту лишний. */
+  pipelineBusy: boolean
+}
+
+const CONSOLE_LEVEL_KIND: Record<number, 'info' | 'warn' | 'err'> = { 0: 'info', 1: 'info', 2: 'warn', 3: 'err' }
+const MAX_CONSOLE_LINES = 100
+
+export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
   const [url, setUrl] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -12,7 +22,13 @@ export default function LivePreview() {
   const [projectPath, setProjectPath] = useState('.')
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const webviewRef = useRef<HTMLWebViewElement>(null)
+
+  const [consoleLines, setConsoleLines] = useState<{ level: number; message: string }[]>([])
+  const [showConsole, setShowConsole] = useState(false)
+
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState<PreviewCheckResult | null>(null)
 
   useEffect(() => {
     const check = async () => {
@@ -26,9 +42,28 @@ export default function LivePreview() {
     return () => clearInterval(t)
   }, [showLogs])
 
+  // <webview> — отдельный процесс рендеринга с полноценным webContents: тем
+  // же способом runtime-check.ts уже читает консоль скрытого окна на стадии
+  // Тестера, здесь то же самое, но видимо и интерактивно.
+  useEffect(() => {
+    // @types/react знает <webview> только как пустой HTMLElement — реальный
+    // тег даёт Electron, и его типы приходится подключать явным приведением.
+    const el = webviewRef.current as unknown as WebviewTag | null
+    if (!el || !isRunning) return
+
+    const onConsole = (e: ConsoleMessageEvent) => {
+      setConsoleLines((prev) => [...prev.slice(-(MAX_CONSOLE_LINES - 1)), { level: e.level, message: e.message }])
+    }
+    el.addEventListener('console-message', onConsole)
+    return () => {
+      el.removeEventListener('console-message', onConsole)
+    }
+  }, [isRunning, url])
+
   const start = async () => {
     setError(null)
     setStarting(true)
+    setConsoleLines([])
     try {
       const res = await window.electronAPI.previewStart(projectPath)
       if (res.success && res.url) {
@@ -41,6 +76,16 @@ export default function LivePreview() {
       }
     } finally {
       setStarting(false)
+    }
+  }
+
+  const runChecks = async () => {
+    setChecking(true)
+    setCheckResult(null)
+    try {
+      setCheckResult(await window.electronAPI.previewRunChecks())
+    } finally {
+      setChecking(false)
     }
   }
 
@@ -66,9 +111,7 @@ export default function LivePreview() {
         ) : (
           <>
             <button
-              onClick={() => {
-                if (iframeRef.current && url) iframeRef.current.src = `${url}?t=${Date.now()}`
-              }}
+              onClick={() => (webviewRef.current as unknown as WebviewTag | null)?.reload()}
               style={{ ...button, width: '24px', padding: 0 }}
               title="Перезагрузить"
             >
@@ -111,6 +154,19 @@ export default function LivePreview() {
             </span>
             <span style={{ color: ps.textDim, flex: 1, fontFamily: fonts.mono }}>{url}</span>
             <button
+              onClick={() => setShowConsole((v) => !v)}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: ps.textFaint,
+                fontSize: '10px',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              {showConsole ? 'скрыть консоль' : `консоль${consoleLines.length ? ` (${consoleLines.length})` : ''}`}
+            </button>
+            <button
               onClick={() => setShowLogs((v) => !v)}
               style={{
                 border: 'none',
@@ -124,12 +180,12 @@ export default function LivePreview() {
               {showLogs ? 'скрыть лог' : 'лог'}
             </button>
           </div>
-          <iframe
-            ref={iframeRef}
+          <webview
+            ref={webviewRef}
             src={url}
-            title="Live Preview"
             style={{
               flex: 1,
+              width: '100%',
               margin: '0 8px',
               border: `1px solid ${ps.borderDark}`,
               background: '#fff',
@@ -161,6 +217,29 @@ export default function LivePreview() {
         )
       )}
 
+      {showConsole && (
+        <div
+          style={{
+            ...well,
+            margin: '8px',
+            maxHeight: '150px',
+            overflow: 'auto',
+            padding: '6px 8px',
+            fontSize: '10px',
+            fontFamily: fonts.mono,
+            lineHeight: 1.6,
+          }}
+        >
+          {consoleLines.length === 0
+            ? <span style={{ color: ps.textFaint }}>Консоль пуста</span>
+            : consoleLines.map((c, i) => (
+                <div key={i} style={{ color: ps[CONSOLE_LEVEL_KIND[c.level] ?? 'info'], wordBreak: 'break-word' }}>
+                  {c.message}
+                </div>
+              ))}
+        </div>
+      )}
+
       {showLogs && (
         <pre
           style={{
@@ -179,6 +258,63 @@ export default function LivePreview() {
           {logs.length ? logs.join('\n') : 'Лог пуст'}
         </pre>
       )}
+
+      <div style={{ borderTop: `1px solid ${ps.border}`, padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <button
+          onClick={() => void runChecks()}
+          disabled={checking || pipelineBusy}
+          title={pipelineBusy ? 'Конвейер занят — дождитесь его или остановите' : undefined}
+          style={checking || pipelineBusy ? { ...button, opacity: 0.55, cursor: 'not-allowed' } : button}
+        >
+          <Icon name="bug" size={11} />
+          {checking ? 'Проверяю…' : 'Прогнать проверки сейчас'}
+        </button>
+        <div style={{ fontSize: '10px', color: ps.textFaint, lineHeight: 1.5 }}>
+          Отдельно от конвейера: поднимает активный проект своей командой (
+          <span style={{ fontFamily: fonts.mono }}>npm start</span>) и стучится в него — без сценария и
+          дизайнера, это чисто механическая проверка, агентов не трогает.
+        </div>
+
+        {checkResult && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            <div style={notice(checkResult.ran ? (checkResult.ok ? 'ok' : 'err') : 'warn')}>
+              {checkResult.summary}
+            </div>
+            {checkResult.findings.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                {checkResult.findings.map((f, i) => (
+                  <div key={i} style={{ fontSize: '10px', color: f.severity === 'hard' ? ps.err : ps.warn, lineHeight: 1.5 }}>
+                    [{f.severity === 'hard' ? 'БЛОКЕР' : 'замечание'}] {f.text}
+                  </div>
+                ))}
+              </div>
+            )}
+            {checkResult.screenshot && <ManualScreenshot path={checkResult.screenshot} />}
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+/** Снимок ручной проверки — тот же принцип, что у превью в панели конвейера: файл перечитывается по метке времени. */
+function ManualScreenshot({ path }: { path: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
+
+  const src = `file:///${path.replace(/\\/g, '/')}?t=${Date.now()}`
+  return (
+    <img
+      src={src}
+      alt="Снимок страницы"
+      onError={() => setFailed(true)}
+      style={{
+        width: '100%',
+        display: 'block',
+        border: `1px solid ${ps.border}`,
+        borderRadius: '2px',
+        background: ps.sunken,
+      }}
+    />
   )
 }

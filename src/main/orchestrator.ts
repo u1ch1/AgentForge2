@@ -20,6 +20,7 @@ import {
   stopRuntimeCheck,
   type PageSnapshot,
   type RuntimeReport,
+  type RuntimeProgressEvent,
   type ScenarioStep,
 } from './runtime-check'
 import { describeLayout, type LayoutReport } from './layout-audit'
@@ -32,8 +33,9 @@ import { ensureRepo, snapshot } from './git-snapshot'
 import {
   MAX_SUBTASKS,
   extractJson,
-  parseAnalysis,
+  parseAnalysisOutcome,
   renderAnalysis,
+  renderClarification,
   parsePlan,
   renderPlan,
   AGENT_NAME,
@@ -86,7 +88,7 @@ const RUNS_FILE = 'pipeline.json'
 const BUSY: PipelineStatus[] = ['analyzing', 'planning', 'working', 'verifying', 'fixing']
 const FINAL: PipelineStatus[] = ['done', 'unverified', 'failed', 'stopped', 'interrupted']
 /** Гейты — прогон ждёт решения пользователя и переживает перезапуск приложения. */
-const GATES: PipelineStatus[] = ['awaiting_analysis', 'awaiting_plan']
+const GATES: PipelineStatus[] = ['awaiting_clarification', 'awaiting_analysis', 'awaiting_plan']
 
 /** projectId -> последний прогон этого проекта. */
 type RunsFile = Record<string, PipelineRun>
@@ -255,7 +257,7 @@ Tester прогоняет сборку/тесты и проверяет каче
 переговоры, юридическое сопровождение, реальные деньги, физические действия,
 доступы и учётные записи в сторонних сервисах) конвейер не выходит.
 
-Оцени, сможет ли эта команда выполнить задачу ниже. Ответь ТОЛЬКО
+Если данных достаточно, чтобы оценить задачу честно, ответь ТОЛЬКО
 JSON-объектом, без пояснений до и после, без markdown-ограды, строго такой
 структуры:
 
@@ -270,47 +272,83 @@ JSON-объектом, без пояснений до и после, без mark
 - feasibility — вероятность довести задачу до рабочего результата без
   критических провалов;
 - coverage — сколько процентов объёма самой задачи конвейер реально закроет
-  своими силами (остальное — то, что придётся делать не конвейеру);
+  своими силами (остальное — то, что придётся делать не конвейером);
 - missing — конкретные пункты, а не общие фразы; пустой массив, если нехватки нет;
 - если задача полностью в возможностях конвейера, feasibility и coverage — 100,
-  missing — пустой массив.`
+  missing — пустой массив.
 
-async function doAnalysis(goal: string): Promise<boolean> {
+Если же без ключевой детали оценка станет гаданием (например, не сказано,
+идёт ли речь о вебе или десктопе, нужна ли оплата и т.п.) — вместо оценки
+задай ОДИН уточняющий вопрос, ответив строго:
+
+{ "question": "твой вопрос одним предложением" }
+
+Уточняй только когда это реально меняет цифры; по умолчанию оценивай сразу.
+Задать вопрос можно не больше одного раза за этот запуск — дальше отвечай
+только числами, по имеющимся данным, пусть и приблизительно.`
+
+/**
+ * Один шаг диалога с Analyst: либо готовая оценка, либо просьба уточнить.
+ *
+ * allowClarify=false — уже был один раунд уточнения, дальше только числа: если
+ * модель снова просит уточнение, это считается невалидным ответом и уходит на
+ * повторную попытку общего цикла, как и любой не-JSON ответ.
+ */
+async function doAnalysis(prompt: string, allowClarify: boolean): Promise<'done' | 'clarify' | 'failed'> {
   setStatus('analyzing')
   log('info', 'Аналитик оценивает выполнимость задачи', 'analyst')
 
   const context = buildProjectContext({
-    keywords: goal.split(/\s+/),
+    keywords: prompt.split(/\s+/),
     projectId: run?.projectId,
   })
   const extra = context ? `${context}\n\n${ANALYSIS_INSTRUCTION}` : ANALYSIS_INSTRUCTION
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const reply = await callAgent('analyst', goal, extra, false)
+    const reply = await callAgent('analyst', prompt, extra, false)
     if (reply.error) {
       log('err', `Ошибка запроса к Analyst: ${reply.error}`, 'analyst')
-      return false
+      return 'failed'
     }
-    const analysis = parseAnalysis(reply.text)
-    if (analysis && run) {
-      run.analysis = analysis
+    const outcome = parseAnalysisOutcome(reply.text)
+
+    if (outcome?.kind === 'analysis' && run) {
+      run.analysis = outcome.value
+      run.clarification = null
       appendMessage(
         'analyst',
         {
           id: `p-analysis-${Date.now()}`,
           sender: 'agent',
-          text: renderAnalysis(analysis),
+          text: renderAnalysis(outcome.value),
           timestamp: Date.now(),
         } as StoredMessage,
         run.projectId
       )
       log(
         'ok',
-        `Анализ готов: выполнимость ${analysis.feasibility}%, покрытие ${analysis.coverage}%`,
+        `Анализ готов: выполнимость ${outcome.value.feasibility}%, покрытие ${outcome.value.coverage}%`,
         'analyst'
       )
-      return true
+      return 'done'
     }
+
+    if (outcome?.kind === 'clarification' && allowClarify && run) {
+      run.clarification = { question: outcome.value.question, answer: null }
+      appendMessage(
+        'analyst',
+        {
+          id: `p-clarify-${Date.now()}`,
+          sender: 'agent',
+          text: renderClarification(outcome.value.question),
+          timestamp: Date.now(),
+        } as StoredMessage,
+        run.projectId
+      )
+      log('info', `Аналитику нужно уточнение: ${outcome.value.question}`, 'analyst')
+      return 'clarify'
+    }
+
     log(
       'err',
       attempt === 1
@@ -319,7 +357,7 @@ async function doAnalysis(goal: string): Promise<boolean> {
       'analyst'
     )
   }
-  return false
+  return 'failed'
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +763,43 @@ interface Verdict {
   runtime: RuntimeReport | null
 }
 
+/**
+ * Транслирует промежуточные события «подними и постучись» в уже существующий
+ * канал лога/скриншота конвейера — без этого пользователь не видел ничего
+ * между «Запуск приложения» и итоговым результатом 30–90 секунд спустя.
+ */
+function onRuntimeProgress(e: RuntimeProgressEvent): void {
+  if (!run) return
+  switch (e.kind) {
+    case 'starting':
+      log('info', `Запускаю приложение: ${e.command}`, 'tester')
+      break
+    case 'up':
+      log('ok', `Приложение отвечает: ${e.url}`, 'tester')
+      break
+    case 'opening':
+      log('info', 'Открываю страницу в браузере', 'tester')
+      break
+    case 'step':
+      log(
+        e.ok === null ? 'info' : e.ok ? 'ok' : 'err',
+        `Шаг ${e.index}/${e.total}: ${e.description}`,
+        'tester'
+      )
+      break
+    case 'screenshot':
+      run.screenshot = e.path
+      emit()
+      break
+    case 'design_start':
+      log('info', 'Дизайнер получил замечания по вёрстке', 'designer')
+      break
+    case 'design_done':
+      log(e.wrote ? 'ok' : 'info', e.wrote ? 'Дизайнер обновил файлы' : 'Дизайнер не прислал файлов', 'designer')
+      break
+  }
+}
+
 async function doVerify(): Promise<Verdict> {
   setStatus('verifying')
   log('info', 'Прогон сборки и тестов', 'tester')
@@ -752,6 +827,7 @@ async function doVerify(): Promise<Verdict> {
       scenario: askTesterForScenario,
       design: askDesigner,
       screenshotPath: screenshotPathFor(run.projectId),
+      onProgress: onRuntimeProgress,
     })
     if (!run) return { report, critical: [], runtime }
 
@@ -1037,6 +1113,7 @@ export function startPipeline(goal: string): PipelineRun | null {
     subtasks: [],
     log: [],
     analysis: null,
+    clarification: null,
     checks: null,
     runtime: null,
     design: null,
@@ -1049,19 +1126,48 @@ export function startPipeline(goal: string): PipelineRun | null {
   }
   emit()
 
-  void runAnalysisStage(text).catch((e: unknown) => fatal(e))
+  void runAnalysisStage(text, true).catch((e: unknown) => fatal(e))
 
   return run
 }
 
-async function runAnalysisStage(goal: string): Promise<void> {
-  const ok = await doAnalysis(goal)
+async function runAnalysisStage(prompt: string, allowClarify: boolean): Promise<void> {
+  const outcome = await doAnalysis(prompt, allowClarify)
   if (!run) return
   if (stopRequested) return setStatus('stopped')
-  if (!ok) return setStatus('failed')
-  // Первая остановка конвейера: пользователь решает, делать задачу вообще
-  // или нет, по оценке Analyst — до того, как Admin потратит запрос на план.
+  if (outcome === 'failed') return setStatus('failed')
+  if (outcome === 'clarify') {
+    // Промежуточная остановка: без ответа пользователя оценка была бы гаданием.
+    return setStatus('awaiting_clarification')
+  }
+  // Первая настоящая остановка конвейера: пользователь решает, делать задачу
+  // вообще или нет, по оценке Analyst — до того, как Admin потратит запрос на план.
   setStatus('awaiting_analysis')
+}
+
+/** Ответ пользователя на уточняющий вопрос Analyst — второй (и последний) круг оценки. */
+export function answerClarification(answer: string): void {
+  const target = getRun()
+  if (!target || target.status !== 'awaiting_clarification' || !target.clarification) return
+  if (run && run !== target && BUSY.includes(run.status)) return
+
+  const trimmed = answer.trim()
+  if (!trimmed) return
+
+  stopRequested = false
+  const question = target.clarification.question
+  run = target
+  run.clarification = { question, answer: trimmed }
+  log('info', 'Пользователь ответил на уточнение', 'analyst')
+
+  const prompt = [
+    run.goal,
+    '',
+    '# Уточнение',
+    `Вопрос аналитика: ${question}`,
+    `Ответ пользователя: ${trimmed}`,
+  ].join('\n')
+  void runAnalysisStage(prompt, false).catch((e: unknown) => fatal(e))
 }
 
 async function runPlanningStage(goal: string): Promise<void> {
@@ -1082,7 +1188,18 @@ export function approveAnalysis(): void {
 
   stopRequested = false
   run = target
-  void runPlanningStage(run.goal).catch((e: unknown) => fatal(e))
+  // Если Analyst задавал вопрос, Admin должен видеть и вопрос, и ответ —
+  // это часть задачи не меньше исходного текста.
+  const goal = run.clarification?.answer
+    ? [
+        run.goal,
+        '',
+        '# Уточнение',
+        `Вопрос аналитика: ${run.clarification.question}`,
+        `Ответ пользователя: ${run.clarification.answer}`,
+      ].join('\n')
+    : run.goal
+  void runPlanningStage(goal).catch((e: unknown) => fatal(e))
 }
 
 /** Утверждение плана пользователем — возможно с правками из интерфейса. */
@@ -1227,7 +1344,13 @@ export function stopPipeline(): void {
   const target = getRun()
   if (target && GATES.includes(target.status)) {
     run = target
-    log('info', target.status === 'awaiting_analysis' ? 'Задача отклонена после анализа' : 'План отклонён')
+    const message =
+      target.status === 'awaiting_clarification'
+        ? 'Уточнение отклонено, конвейер остановлен'
+        : target.status === 'awaiting_analysis'
+          ? 'Задача отклонена после анализа'
+          : 'План отклонён'
+    log('info', message)
     setStatus('stopped')
   }
 }
@@ -1244,6 +1367,9 @@ export function registerPipelineIPC(windowGetter: () => BrowserWindow | null): v
     return getRun()
   })
   ipcMain.handle('pipeline:get', () => getRun())
+  ipcMain.handle('pipeline:answerClarification', (_e: IpcMainInvokeEvent, answer: string) =>
+    answerClarification(answer)
+  )
   ipcMain.handle('pipeline:approveAnalysis', () => approveAnalysis())
   ipcMain.handle('pipeline:approve', (_e: IpcMainInvokeEvent, edited?: PipelineSubtask[]) =>
     approvePlan(edited)

@@ -8,6 +8,8 @@
 export type PipelineStatus =
   | 'idle'
   | 'analyzing'
+  /** Analyst задал уточняющий вопрос — конвейер ждёт ответа пользователя. */
+  | 'awaiting_clarification'
   | 'awaiting_analysis'
   | 'planning'
   | 'awaiting_plan'
@@ -32,6 +34,12 @@ export interface PipelineAnalysis {
   /** Конкретные пункты нехватки — доступы, интеграции, ручная работа. */
   missing: string[]
   summary: string
+}
+
+export interface PipelineClarification {
+  question: string
+  /** null, пока пользователь не ответил — гейт `awaiting_clarification` открыт. */
+  answer: string | null
 }
 
 export interface PipelineSubtask {
@@ -61,6 +69,8 @@ export interface PipelineRun {
   log: PipelineLogEntry[]
   /** Оценка Analyst до начала работ — вероятность успеха и чего не хватает. */
   analysis: PipelineAnalysis | null
+  /** Уточняющий вопрос Analyst и (если уже дан) ответ пользователя. */
+  clarification: PipelineClarification | null
   /** Итог последнего прогона проверок — то, на основании чего выносится вердикт. */
   checks: { ran: boolean; passed: boolean; summary: string } | null
   /** Итог «подними и постучись»: работает ли приложение, а не только компилируется. */

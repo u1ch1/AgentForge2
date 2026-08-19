@@ -13,6 +13,7 @@ interface PipelinePanelProps {
 const STATUS_LABEL: Record<PipelineStatus, string> = {
   idle: 'Ожидание',
   analyzing: 'Аналитик оценивает задачу…',
+  awaiting_clarification: 'Аналитик ждёт уточнения',
   awaiting_analysis: 'Ждёт решения: делать или нет',
   planning: 'Admin составляет план…',
   awaiting_plan: 'План ждёт утверждения',
@@ -28,6 +29,7 @@ const STATUS_LABEL: Record<PipelineStatus, string> = {
 
 const ACTIVE: PipelineStatus[] = [
   'analyzing',
+  'awaiting_clarification',
   'awaiting_analysis',
   'planning',
   'awaiting_plan',

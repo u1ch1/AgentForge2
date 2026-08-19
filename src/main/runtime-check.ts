@@ -74,6 +74,21 @@ export interface ScenarioOutcome {
   detail: string
 }
 
+/**
+ * Промежуточные события проверки — единственная цель существования:
+ * дать вызывающей стороне показать прогресс в реальном времени, пока сам
+ * прогон идёт (он может занимать десятки секунд). Механика ничего не решает
+ * по этим событиям — они только для наблюдения.
+ */
+export type RuntimeProgressEvent =
+  | { kind: 'starting'; command: string }
+  | { kind: 'up'; url: string }
+  | { kind: 'opening'; url: string }
+  | { kind: 'step'; index: number; total: number; description: string; ok: boolean | null }
+  | { kind: 'screenshot'; path: string }
+  | { kind: 'design_start' }
+  | { kind: 'design_done'; wrote: boolean }
+
 export interface RuntimeOptions {
   /**
    * Сочиняет сценарий по снимку страницы. Вызывается, пока сервер поднят и
@@ -89,6 +104,8 @@ export interface RuntimeOptions {
   design?: (page: PageSnapshot, report: LayoutReport) => Promise<boolean>
   /** Куда сохранить снимок готовой страницы. Пусто — не снимать. */
   screenshotPath?: string
+  /** Живой прогресс проверки — необязателен, механику не меняет. */
+  onProgress?: (event: RuntimeProgressEvent) => void
 }
 
 export interface RuntimeReport {
@@ -582,13 +599,19 @@ async function runDesign(
   > | null
   if (!snap) return
 
+  opts.onProgress?.({ kind: 'design_start' })
+
   let wrote = false
   try {
     wrote = await opts.design({ url, ...snap }, layout.before)
   } catch {
+    opts.onProgress?.({ kind: 'design_done', wrote: false })
     return
   }
-  if (!wrote) return
+  if (!wrote) {
+    opts.onProgress?.({ kind: 'design_done', wrote: false })
+    return
+  }
 
   const reloaded = await Promise.race([
     contents.loadURL(url).then(() => true).catch(() => false),
@@ -596,10 +619,13 @@ async function runDesign(
   ])
   if (!reloaded) {
     findings.push({ severity: 'hard', text: 'После правки оформления страница перестала открываться' })
+    opts.onProgress?.({ kind: 'design_done', wrote: true })
     return
   }
   await new Promise((r) => setTimeout(r, 1500))
   layout.after = await auditLayout(contents)
+  await snapshotNow(contents, opts)
+  opts.onProgress?.({ kind: 'design_done', wrote: true })
 
   // Дизайнер обязан улучшать. Если замечаний стало больше — это регрессия, и
   // молчать о ней нельзя, хотя приёмку из-за оформления мы не валим.
@@ -611,14 +637,24 @@ async function runDesign(
   }
 }
 
-/** Снимок готовой страницы — чтобы человек посмотрел на результат глазами. */
-async function capture(win: BrowserWindow, opts: RuntimeOptions): Promise<string | null> {
+/**
+ * Снимок страницы прямо сейчас — вызывается несколько раз за прогон (после
+ * загрузки, после каждого шага сценария, после правки дизайнера), каждый раз
+ * перезаписывая один и тот же файл. Так у панели конвейера получается эффект
+ * «живой камеры» без потоковой передачи видео: она просто перечитывает файл
+ * при каждом обновлении прогона.
+ */
+async function snapshotNow(
+  contents: Electron.WebContents,
+  opts: RuntimeOptions
+): Promise<string | null> {
   if (!opts.screenshotPath) return null
   try {
-    const image = await win.capturePage()
+    const image = await contents.capturePage()
     if (image.isEmpty()) return null
     fs.mkdirSync(path.dirname(opts.screenshotPath), { recursive: true })
     fs.writeFileSync(opts.screenshotPath, image.toPNG())
+    opts.onProgress?.({ kind: 'screenshot', path: opts.screenshotPath })
     return opts.screenshotPath
   } catch {
     return null
@@ -659,6 +695,7 @@ async function inspectPage(url: string, opts: RuntimeOptions): Promise<PageResul
       if (level >= 3 && errors.length < 5) errors.push(message.slice(0, 200))
     })
 
+    opts.onProgress?.({ kind: 'opening', url })
     const loaded = await Promise.race([
       win.loadURL(url).then(() => true).catch(() => false),
       new Promise<boolean>((r) => setTimeout(() => r(false), PAGE_TIMEOUT)),
@@ -691,13 +728,19 @@ async function inspectPage(url: string, opts: RuntimeOptions): Promise<PageResul
     // иначе «до» и «после» окажутся про разные экраны и сравнивать будет нечего.
     layout = { before: await auditLayout(contents), after: null }
 
+    // Первый снимок — сразу как страница осела, до всякого сценария: уже
+    // здесь видно, поднялось приложение или нет, а не только в самом конце.
+    screenshot = (await snapshotNow(contents, opts)) ?? screenshot
+
     // --- Пользовательский сценарий ------------------------------------------
     // Шаги идут по порядку и без обходных путей: сценарий может не составиться,
     // но правку оформления и снимок это пропускать не должно.
     await runScenario(contents, url, opts, scenario, findings, errors)
 
     await runDesign(contents, url, opts, layout, findings)
-    screenshot = await capture(win, opts)
+    // Финальный снимок — гарантирует свежий кадр, даже если ни сценарий, ни
+    // дизайнер ничего не переснимали (сценарий не составился, замечаний не было).
+    screenshot = (await snapshotNow(contents, opts)) ?? screenshot
   } catch (e) {
     findings.push({ severity: 'soft', text: `Не удалось открыть страницу: ${(e as Error).message}` })
   } finally {
@@ -738,7 +781,10 @@ async function runScenario(
   if (steps.length === 0) return
 
   {
-    for (const step of steps) {
+    for (const [i, step] of steps.entries()) {
+      const description = describeStep(step)
+      opts.onProgress?.({ kind: 'step', index: i + 1, total: steps.length, description, ok: null })
+
       let code = 'error'
       if (step.action === 'waitFor') {
         // Список задач появляется после ответа сервера — ждём, а не проверяем сразу.
@@ -758,6 +804,10 @@ async function runScenario(
 
       const verdict = judgeStep(step, code)
       scenario.push({ step, ok: verdict.ok, detail: verdict.detail })
+      opts.onProgress?.({ kind: 'step', index: i + 1, total: steps.length, description, ok: verdict.ok })
+      // Снимок после каждого шага — так видно, что происходило на странице по
+      // ходу сценария, а не только итоговый кадр.
+      await snapshotNow(contents, opts)
       if (!verdict.ok) {
         findings.push({
           severity: verdict.severity,
@@ -855,6 +905,7 @@ export async function runRuntimeCheck(cwd?: string, opts: RuntimeOptions = {}): 
     env: { ...process.env, PORT: String(port), BROWSER: 'none', FORCE_COLOR: '0' },
   })
   current = proc
+  opts.onProgress?.({ kind: 'starting', command: start.printable })
   proc.stdout?.on('data', (d: Buffer) => (output += d.toString()))
   proc.stderr?.on('data', (d: Buffer) => (output += d.toString()))
   proc.on('close', (code) => (exited = code))
@@ -894,6 +945,8 @@ export async function runRuntimeCheck(cwd?: string, opts: RuntimeOptions = {}): 
       })
       return { ran: true, ok: false, findings, scenario: [], layout: null, screenshot: null, summary: summarize(findings, [], []) }
     }
+
+    opts.onProgress?.({ kind: 'up', url: base })
 
     const probed: string[] = []
     // Страницу ищем только в запущенном пакете: если фронтенд лежит отдельно,
