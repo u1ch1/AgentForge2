@@ -154,8 +154,14 @@ export async function startPreview(projectPath: string): Promise<PreviewStartOut
   } catch {
     return { success: false, url: null, error: 'package.json повреждён' }
   }
-  if (!pkg.scripts?.dev) {
-    return { success: false, url: null, error: 'В package.json нет скрипта "dev"' }
+  // "dev" — обычный дев-сервер с горячей перезагрузкой (Vite/CRA). Но конвейер
+  // сам решает, какие скрипты класть в package.json, и по умолчанию рассчитан
+  // на "start" (это то, что в первую очередь пробует автопроверка Тестера в
+  // runtime-check.ts) — без запасного варианта такие проекты в «Просмотре» не
+  // открывались бы вовсе, хотя штатно запускаются.
+  const scriptName = pkg.scripts?.dev ? 'dev' : pkg.scripts?.start ? 'start' : null
+  if (!scriptName) {
+    return { success: false, url: null, error: 'В package.json нет ни скрипта "dev", ни "start"' }
   }
   if (!fs.existsSync(path.join(feDir, 'node_modules'))) {
     return {
@@ -171,7 +177,7 @@ export async function startPreview(projectPath: string): Promise<PreviewStartOut
 
   // shell: true обязателен: начиная с Node 18.20/20.12 spawn отказывается
   // запускать .cmd-файлы (в том числе npm.cmd) без него.
-  devServer = spawn('npm', ['run', 'dev'], {
+  devServer = spawn('npm', scriptName === 'dev' ? ['run', 'dev'] : ['start'], {
     cwd: feDir,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
