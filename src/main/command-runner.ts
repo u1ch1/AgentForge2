@@ -42,10 +42,10 @@ export interface CheckStep {
 /** Папки, внутрь которых искать проекты бессмысленно. */
 const SKIP_SCAN = new Set([
   'node_modules', '.git', 'dist', 'build', 'release', '.next',
-  'coverage', '__pycache__', 'venv', '.venv', '.turbo', 'deploy',
+  'coverage', '__pycache__', 'venv', '.venv', '.turbo', 'deploy', 'vendor',
 ])
 
-const MANIFEST_FILES = ['package.json', 'requirements.txt', 'pyproject.toml']
+const MANIFEST_FILES = ['package.json', 'requirements.txt', 'pyproject.toml', 'composer.json', 'manage.py']
 
 /**
  * Где в проекте лежат манифесты.
@@ -251,7 +251,8 @@ function planChecksIn(dir: string): CheckStep[] {
 
   const hasRequirements = fs.existsSync(path.join(dir, 'requirements.txt'))
   const hasPyProject = fs.existsSync(path.join(dir, 'pyproject.toml'))
-  if (hasRequirements || hasPyProject) {
+  const hasManagePy = fs.existsSync(path.join(dir, 'manage.py'))
+  if (hasRequirements || hasPyProject || hasManagePy) {
     if (hasRequirements) {
       steps.push({
         label: 'Установка зависимостей',
@@ -270,6 +271,29 @@ function planChecksIn(dir: string): CheckStep[] {
         label: 'Тесты',
         command: 'python',
         args: ['-m', 'pytest', '-q'],
+        optional: true,
+        timeoutMs: 3 * 60 * 1000,
+      })
+    }
+    return steps
+  }
+
+  // PHP (Laravel и обычные проекты на composer). Синтаксической проверки всей
+  // папки одной командой тут нет — composer install уже ловит большую часть
+  // проблем на этапе автозагрузки; artisan test запускаем, только если он
+  // реально есть (Laravel), иначе тестового раннера может не быть вовсе.
+  if (fs.existsSync(path.join(dir, 'composer.json'))) {
+    steps.push({
+      label: 'Установка зависимостей',
+      command: 'composer',
+      args: ['install', '--no-interaction', '--no-progress'],
+      timeoutMs: 8 * 60 * 1000,
+    })
+    if (fs.existsSync(path.join(dir, 'artisan'))) {
+      steps.push({
+        label: 'Тесты',
+        command: 'php',
+        args: ['artisan', 'test'],
         optional: true,
         timeoutMs: 3 * 60 * 1000,
       })

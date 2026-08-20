@@ -154,6 +154,35 @@ export function openPreviewWindow(): { success: boolean; error?: string } {
   return { success: true }
 }
 
+type Stack = 'node' | 'python' | 'php'
+
+interface LaunchPlan {
+  cmd: string
+  args: string[]
+  /** Актуален только для фронтенда — там его ждёт waitForUrl()/показывает webview. */
+  fallbackUrl: string
+  env?: Record<string, string>
+}
+
+/**
+ * Определяем стек по характерным файлам в корне папки — теми же маркерами,
+ * которыми уже пользуется findManifestRoots() в command-runner.ts (Тестер).
+ * "static" (голый index.html без манифеста) сюда осознанно не входит — под
+ * него нет отдельного запуска, это задел на будущее.
+ */
+function detectStack(dir: string): Stack | null {
+  if (fs.existsSync(path.join(dir, 'package.json'))) return 'node'
+  if (fs.existsSync(path.join(dir, 'composer.json')) || fs.existsSync(path.join(dir, 'artisan'))) return 'php'
+  if (
+    fs.existsSync(path.join(dir, 'requirements.txt')) ||
+    fs.existsSync(path.join(dir, 'pyproject.toml')) ||
+    fs.existsSync(path.join(dir, 'manage.py'))
+  ) {
+    return 'python'
+  }
+  return null
+}
+
 function isViteProject(dir: string): boolean {
   return fs.existsSync(path.join(dir, 'vite.config.ts')) || fs.existsSync(path.join(dir, 'vite.config.js'))
 }
@@ -166,12 +195,127 @@ function guessPort(dir: string, pkg: { dependencies?: Record<string, string> }):
 }
 
 /**
+ * Vite/CRA и подобные браузерные dev-серверы — с обязательным "dev"/"start"
+ * и своим портом (5173/3000), которые webview должен открыть напрямую.
+ */
+function nodeFrontendLaunchPlan(dir: string): LaunchPlan | { error: string } {
+  let pkg: PkgJson
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'))
+  } catch {
+    return { error: 'package.json повреждён' }
+  }
+  const scriptName = pkg.scripts?.dev ? 'dev' : pkg.scripts?.start ? 'start' : null
+  if (!scriptName) return { error: 'В package.json нет ни скрипта "dev", ни "start"' }
+  if (!fs.existsSync(path.join(dir, 'node_modules'))) {
+    return { error: 'Не установлены зависимости. Выполните "npm install" в этой папке.' }
+  }
+  const port = guessPort(dir, pkg)
+  // "localhost" на части Windows-машин резолвится в dev-сервере и в <webview>
+  // по-разному (IPv4 у одного, IPv6-loopback у другого) — сервер поднимается
+  // штатно, а «Просмотр» показывает белый экран, потому что достучаться не
+  // может. Поэтому явно просим сервер слушать 127.0.0.1, а не гадаем постфактум,
+  // какой адрес реально принимает соединение: для Vite — флагом --host (сам
+  // Vite HOST из окружения не читает), для остальных (CRA и т.п.) — через
+  // переменную HOST, которую они умеют понимать сами.
+  const args =
+    scriptName === 'dev'
+      ? isViteProject(dir)
+        ? ['run', 'dev', '--', '--host', '127.0.0.1']
+        : ['run', 'dev']
+      : ['start']
+  return {
+    cmd: 'npm',
+    args,
+    fallbackUrl: `http://127.0.0.1:${port}`,
+    env: { PORT: String(port), HOST: '127.0.0.1', BROWSER: 'none', FORCE_COLOR: '0' },
+  }
+}
+
+/**
+ * API-сервер на Express и подобных: свой порт обычно уже зашит в коде
+ * (process.env.PORT || 3001) — в отличие от фронтенда, здесь НЕЛЬЗЯ навязывать
+ * PORT/5173 через окружение, это собьёт сервер с его собственного порта,
+ * который фронтенд уже ожидает найти по фиксированному адресу.
+ */
+function nodeBackendLaunchPlan(dir: string): LaunchPlan | { error: string } {
+  let pkg: PkgJson
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'))
+  } catch {
+    return { error: 'package.json повреждён' }
+  }
+  const scriptName = pkg.scripts?.dev ? 'dev' : pkg.scripts?.start ? 'start' : null
+  if (!scriptName) return { error: 'В package.json нет ни скрипта "dev", ни "start"' }
+  if (!fs.existsSync(path.join(dir, 'node_modules'))) {
+    return { error: 'Не установлены зависимости (npm install)' }
+  }
+  return {
+    cmd: 'npm',
+    args: scriptName === 'start' ? ['start'] : ['run', scriptName],
+    fallbackUrl: '',
+    env: { HOST: '127.0.0.1', FORCE_COLOR: '0' },
+  }
+}
+
+/**
+ * Django (manage.py) или ASGI-приложение (FastAPI и подобные через uvicorn).
+ * Готовых зависимостей проверить дешёвым способом нельзя (в отличие от
+ * node_modules) — если pip-пакеты не установлены, процесс просто упадёт при
+ * старте, и это будет видно в логе самим traceback'ом Python.
+ */
+function pythonLaunchPlan(dir: string, port: number): LaunchPlan | { error: string } {
+  const fallbackUrl = `http://127.0.0.1:${port}`
+  if (fs.existsSync(path.join(dir, 'manage.py'))) {
+    return { cmd: 'python', args: ['manage.py', 'runserver', `127.0.0.1:${port}`], fallbackUrl }
+  }
+  const entry = ['main', 'app', 'server'].find((n) => fs.existsSync(path.join(dir, `${n}.py`)))
+  if (!entry) return { error: 'Не нашли manage.py или main.py/app.py/server.py — не знаю, что запускать' }
+
+  let requirements = ''
+  try {
+    requirements = fs.readFileSync(path.join(dir, 'requirements.txt'), 'utf-8')
+  } catch {
+    /* requirements.txt необязателен — может быть pyproject.toml */
+  }
+  if (/uvicorn/i.test(requirements)) {
+    return {
+      cmd: 'python',
+      args: ['-m', 'uvicorn', `${entry}:app`, '--host', '127.0.0.1', '--port', String(port), '--reload'],
+      fallbackUrl,
+    }
+  }
+  return { cmd: 'python', args: [`${entry}.py`], fallbackUrl }
+}
+
+/** Laravel (artisan) — свой встроенный сервер; обычный composer-проект — встроенный сервер PHP напрямую. */
+function phpLaunchPlan(dir: string, port: number): LaunchPlan {
+  const fallbackUrl = `http://127.0.0.1:${port}`
+  if (fs.existsSync(path.join(dir, 'artisan'))) {
+    return { cmd: 'php', args: ['artisan', 'serve', '--host=127.0.0.1', `--port=${port}`], fallbackUrl }
+  }
+  const hasPublic = fs.existsSync(path.join(dir, 'public', 'index.php'))
+  return {
+    cmd: 'php',
+    args: hasPublic ? ['-S', `127.0.0.1:${port}`, '-t', 'public'] : ['-S', `127.0.0.1:${port}`],
+    fallbackUrl,
+  }
+}
+
+/** Порт бэкенда сознательно другой, чем у фронтенда (8000 vs 8001) — иначе Python/PHP на обеих ролях столкнутся портами. */
+function backendLaunchPlan(dir: string, stack: Stack): LaunchPlan | { error: string } {
+  if (stack === 'node') return nodeBackendLaunchPlan(dir)
+  if (stack === 'python') return pythonLaunchPlan(dir, 8001)
+  return phpLaunchPlan(dir, 8001)
+}
+
+/**
  * Вторая папка с манифестом рядом с той, что выбрана как фронтенд — тем же
  * findManifestRoots(), которым уже пользуется автопроверка Тестера и
  * автоопределение самого feDir выше.
  */
 function findBackendDir(feDir: string): string | null {
-  return findManifestRoots().find((dir) => dir !== feDir && fs.existsSync(path.join(dir, 'package.json'))) ?? null
+  return findManifestRoots().find((dir) => dir !== feDir && detectStack(dir) !== null) ?? null
 }
 
 /**
@@ -192,23 +336,11 @@ function startBackend(feDir: string): void {
     return
   }
 
-  let pkg: PkgJson
-  try {
-    pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8'))
-  } catch {
+  const stack = detectStack(dir)
+  const plan = stack ? backendLaunchPlan(dir, stack) : { error: 'Не распознали стек бэкенда' }
+  if ('error' in plan) {
     backendStatus = 'error'
-    backendError = 'package.json повреждён'
-    return
-  }
-  const scriptName = pkg.scripts?.dev ? 'dev' : pkg.scripts?.start ? 'start' : null
-  if (!scriptName) {
-    backendStatus = 'error'
-    backendError = 'В package.json нет ни скрипта "dev", ни "start"'
-    return
-  }
-  if (!fs.existsSync(path.join(dir, 'node_modules'))) {
-    backendStatus = 'error'
-    backendError = 'Не установлены зависимости (npm install)'
+    backendError = plan.error
     return
   }
 
@@ -216,15 +348,14 @@ function startBackend(feDir: string): void {
   backendError = null
   backendLogs = []
 
-  const args = scriptName === 'start' ? ['start'] : ['run', scriptName]
-  const proc = spawn('npm', args, {
+  const proc = spawn(plan.cmd, plan.args, {
     cwd: dir,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
     detached: process.platform !== 'win32',
     // HOST — на случай, если бэкенд, как и фронтенд, слушает явный "localhost"
     // вместо всех интерфейсов (см. resolveReachableUrl выше про эту же проблему).
-    env: { ...process.env, HOST: '127.0.0.1', FORCE_COLOR: '0' },
+    env: { ...process.env, HOST: '127.0.0.1', FORCE_COLOR: '0', ...plan.env },
   })
   backendServer = proc
 
@@ -331,87 +462,59 @@ export async function startPreview(projectPath: string): Promise<PreviewStartOut
 
   let feDir = resolveInProject(projectPath || 'frontend')
 
-  // Поле по умолчанию указывает на корень проекта. Если там package.json нет,
-  // а путь никто не менял — конвейер мог разложить проект на подпапки
-  // (frontend/ + backend/), как для крупных задач: ищем манифесты тем же
-  // способом, что и автопроверка Тестера (findManifestRoots), и берём ту
-  // половину, у которой есть браузерный dev/start — не бэкенд без страницы.
+  // Поле по умолчанию указывает на корень проекта. Если там ничего
+  // узнаваемого нет, а путь никто не менял — конвейер мог разложить проект
+  // на подпапки (frontend/ + backend/), как для крупных задач: ищем манифесты
+  // тем же способом, что и автопроверка Тестера (findManifestRoots).
+  // Предпочитаем Node-кандидата со скриптом "dev" (обычно это и есть
+  // браузерный фронтенд, а не голый backend без страниц) — для остальных
+  // стеков такого сигнала нет, берём первый узнанный.
   const isDefaultPath = !projectPath.trim() || projectPath.trim() === '.'
-  if (isDefaultPath && (!feDir || !fs.existsSync(path.join(feDir, 'package.json')))) {
-    const candidates = findManifestRoots()
-      .map((dir) => {
-        try {
-          return { dir, pkg: JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as PkgJson }
-        } catch {
-          return null
-        }
-      })
-      .filter(
-        (c): c is { dir: string; pkg: PkgJson } => c !== null && Boolean(c.pkg.scripts?.dev || c.pkg.scripts?.start)
-      )
-    const guess = candidates.find((c) => c.pkg.scripts?.dev) ?? candidates[0]
-    if (guess) feDir = guess.dir
+  if (isDefaultPath && (!feDir || detectStack(feDir) === null)) {
+    const roots = findManifestRoots()
+    const nodeWithDev = roots.find((dir) => {
+      if (!fs.existsSync(path.join(dir, 'package.json'))) return false
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')) as PkgJson
+        return Boolean(pkg.scripts?.dev)
+      } catch {
+        return false
+      }
+    })
+    const guess = nodeWithDev ?? roots.find((dir) => detectStack(dir) !== null)
+    if (guess) feDir = guess
   }
 
   if (!feDir || !fs.existsSync(feDir)) {
     return { success: false, url: null, error: `Папка "${projectPath}" не найдена в папке проекта` }
   }
 
-  const pkgPath = path.join(feDir, 'package.json')
-  if (!fs.existsSync(pkgPath)) {
-    return { success: false, url: null, error: 'В папке нет package.json' }
-  }
-
-  let pkg: PkgJson
-  try {
-    pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
-  } catch {
-    return { success: false, url: null, error: 'package.json повреждён' }
-  }
-  // "dev" — обычный дев-сервер с горячей перезагрузкой (Vite/CRA). Но конвейер
-  // сам решает, какие скрипты класть в package.json, и по умолчанию рассчитан
-  // на "start" (это то, что в первую очередь пробует автопроверка Тестера в
-  // runtime-check.ts) — без запасного варианта такие проекты в «Просмотре» не
-  // открывались бы вовсе, хотя штатно запускаются.
-  const scriptName = pkg.scripts?.dev ? 'dev' : pkg.scripts?.start ? 'start' : null
-  if (!scriptName) {
-    return { success: false, url: null, error: 'В package.json нет ни скрипта "dev", ни "start"' }
-  }
-  if (!fs.existsSync(path.join(feDir, 'node_modules'))) {
+  const stack = detectStack(feDir)
+  if (!stack) {
     return {
       success: false,
       url: null,
-      error: 'Не установлены зависимости. Выполните "npm install" в этой папке.',
+      error: 'Не распознали стек: нет package.json, composer.json/artisan, requirements.txt/pyproject.toml/manage.py',
     }
   }
 
-  const port = guessPort(feDir, pkg)
-  // "localhost" на части Windows-машин резолвится в dev-сервере и в <webview>
-  // по-разному (IPv4 у одного, IPv6-loopback у другого) — сервер поднимается
-  // штатно, а «Просмотр» показывает белый экран, потому что достучаться не
-  // может. Поэтому явно просим сервер слушать 127.0.0.1, а не гадаем постфактум,
-  // какой адрес реально принимает соединение: для Vite — флагом --host (сам
-  // Vite HOST из окружения не читает), для остальных (CRA и т.п.) — через
-  // переменную HOST, которую они умеют понимать сами.
-  const args: string[] =
-    scriptName === 'dev'
-      ? isViteProject(feDir)
-        ? ['run', 'dev', '--', '--host', '127.0.0.1']
-        : ['run', 'dev']
-      : ['start']
-  const fallbackUrl = `http://127.0.0.1:${port}`
+  const plan = stack === 'node' ? nodeFrontendLaunchPlan(feDir) : stack === 'python' ? pythonLaunchPlan(feDir, 8000) : phpLaunchPlan(feDir, 8000)
+  if ('error' in plan) {
+    return { success: false, url: null, error: plan.error }
+  }
+
   logs = []
 
   startBackend(feDir)
 
   // shell: true обязателен: начиная с Node 18.20/20.12 spawn отказывается
   // запускать .cmd-файлы (в том числе npm.cmd) без него.
-  devServer = spawn('npm', args, {
+  devServer = spawn(plan.cmd, plan.args, {
     cwd: feDir,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
     detached: process.platform !== 'win32',
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', BROWSER: 'none', FORCE_COLOR: '0' },
+    env: { ...process.env, ...plan.env },
   })
 
   devServer.stdout?.on('data', (d: Buffer) => pushLog(d.toString()))
@@ -429,7 +532,7 @@ export async function startPreview(projectPath: string): Promise<PreviewStartOut
     currentProjectId = null
   })
 
-  const url = await resolveReachableUrl(await waitForUrl(fallbackUrl))
+  const url = await resolveReachableUrl(await waitForUrl(plan.fallbackUrl))
   if (!devServer) {
     return { success: false, url: null, error: 'Dev-сервер завершился при старте. См. логи.' }
   }

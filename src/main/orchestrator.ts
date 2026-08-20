@@ -17,6 +17,7 @@ import {
 } from './code-context'
 import { runChecks, type CheckReport } from './command-runner'
 import { stopPreviewForProject } from './live-preview'
+import { applyScaffold } from './scaffold'
 import {
   runRuntimeCheck,
   stopRuntimeCheck,
@@ -419,7 +420,17 @@ const PLAN_INSTRUCTION = `## Формат этого ответа
 - подзадачи идут в порядке выполнения: то, от чего зависят другие, — раньше;
 - не более ${MAX_SUBTASKS} подзадач, каждая — законченный кусок работы;
 - в description укажи конкретные пути файлов, которые надо создать или изменить;
-- не пиши код — только план.`
+- не пиши код — только план;
+- для backend выбирай стек по задаче, а не только Express по умолчанию:
+  Express+CORS, FastAPI/Django (Python) и PHP/Laravel — все три одинаково
+  поддержаны проверкой сборки и «Просмотром»;
+- если стек — Vite+React+TS+Tailwind на фронтенде и/или Express+CORS/FastAPI
+  на бэкенде с раскладкой по подпапкам frontend/ и backend/ (пути в
+  description начинаются с этих префиксов) — в этих подпапках уже будет
+  готовый базовый каркас конфигурации к моменту первой подзадачи, не
+  закладывай отдельную подзадачу на "настройку проекта". Для PHP/Laravel
+  или без такой раскладки это правило не действует — каркас не готов
+  заранее, начинай с обычной установки фреймворка.`
 
 // ---------------------------------------------------------------------------
 // Этапы
@@ -1384,6 +1395,11 @@ async function runAssigneeQueue(assignee: Assignee): Promise<void> {
 async function runRemainder(): Promise<void> {
   if (!run) return
   setStatus('working')
+
+  const written = applyScaffold(run.projectId, run.stack ?? '', run.subtasks)
+  if (written.length > 0) {
+    log('info', `Базовый каркас применён: ${written.length} файлов`)
+  }
 
   const repo = await ensureRepo(run.projectId)
   if (repo.ok && repo.created) {
