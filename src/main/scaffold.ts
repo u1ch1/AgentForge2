@@ -13,7 +13,7 @@ import { FRONTEND_SCAFFOLD, BACKEND_SCAFFOLD, PYTHON_BACKEND_SCAFFOLD } from './
  * (на машине разработки его просто нет), лучше пусть воркер соберёт его сам
  * обычным `composer create-project`, чем получит от нас нерабочий скелет.
  */
-function pickBackendTemplate(stackText: string): Record<string, string> | null {
+export function pickBackendTemplate(stackText: string): Record<string, string> | null {
   if (/php|laravel/i.test(stackText)) return null
   if (/fastapi|django|flask|python/i.test(stackText)) return PYTHON_BACKEND_SCAFFOLD
   return BACKEND_SCAFFOLD
@@ -29,7 +29,7 @@ function pickBackendTemplate(stackText: string): Record<string, string> | null {
  * указывать конкретные пути) — то есть план и так рассчитан на этот стек и
  * эту раскладку, а не только на роль "frontend"/"backend" как таковую.
  */
-function pickScaffoldTargets(subtasks: { assignee: Assignee; description: string }[]): Assignee[] {
+export function pickScaffoldTargets(subtasks: { assignee: Assignee; description: string }[]): Assignee[] {
   return (['frontend', 'backend'] as const).filter((a) =>
     subtasks.some((s) => s.assignee === a && new RegExp(`\\b${a}/`).test(s.description))
   )

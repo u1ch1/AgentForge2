@@ -22,6 +22,21 @@ import { auditLayout, describeLayout, type LayoutReport } from './layout-audit'
  * оттуда же. Никаких новых зависимостей.
  */
 
+/**
+ * Vite и подобные красят вывод ANSI-кодами даже при FORCE_COLOR:'0' в
+ * окружении (см. тот же приём в live-preview.ts) — код вклинивается прямо
+ * посреди "localhost:5173" (жирность применяется отдельно к цифрам порта),
+ * из-за чего regex ниже, который вытаскивает порт из вывода сервера, не
+ * находит совпадения. Итог на живом прогоне: рабочий сервер помечался как
+ * "не начал отвечать за 25 секунд", и это тратило целый цикл исправлений
+ * впустую — воркер чинил не ту причину, потому что настоящая была не в его
+ * коде, а в этом разборе вывода.
+ */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+}
+
 /** Ждём готовности сервера столько: холодный старт бывает медленным. */
 const READY_TIMEOUT = 25_000
 const PROBE_TIMEOUT = 8_000
@@ -909,8 +924,8 @@ export async function runRuntimeCheck(cwd?: string, opts: RuntimeOptions = {}): 
   })
   current = proc
   opts.onProgress?.({ kind: 'starting', command: start.printable })
-  proc.stdout?.on('data', (d: Buffer) => (output += d.toString()))
-  proc.stderr?.on('data', (d: Buffer) => (output += d.toString()))
+  proc.stdout?.on('data', (d: Buffer) => (output += stripAnsi(d.toString())))
+  proc.stderr?.on('data', (d: Buffer) => (output += stripAnsi(d.toString())))
   proc.on('close', (code) => (exited = code))
 
   try {
@@ -920,7 +935,7 @@ export async function runRuntimeCheck(cwd?: string, opts: RuntimeOptions = {}): 
       const fromOutput = [...output.matchAll(/(?:localhost|127\.0\.0\.1|порт|port)\D{0,3}(\d{4,5})/gi)].map((m) =>
         Number(m[1])
       )
-      return [...new Set([port, ...fromOutput, 3000, 8000, 8080, 5000])]
+      return [...new Set([port, ...fromOutput, 5173, 3000, 8000, 8080, 5000])]
     }
 
     let base: string | null = null

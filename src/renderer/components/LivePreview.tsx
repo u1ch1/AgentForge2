@@ -234,8 +234,8 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
           >
             <Icon name="eye" size={32} strokeWidth={0.9} />
             <div style={{ fontSize: '11px', lineHeight: 1.6 }}>
-              Запускает <span style={{ color: ps.textDim }}>npm run dev</span> в указанной папке
-              и показывает результат здесь
+              Определяет стек по файлам в папке (Node, Python, PHP или голый
+              HTML/CSS/JS без сборки) и показывает результат здесь
             </div>
           </div>
         )

@@ -1,6 +1,7 @@
 import { ipcMain, IpcMainInvokeEvent, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
 import * as net from 'net'
+import * as http from 'http'
 import * as fs from 'fs'
 import * as path from 'path'
 import { resolveInProject, getActiveProjectId, getProjectDir, toProjectRelative } from './projects'
@@ -14,6 +15,8 @@ interface PkgJson {
 }
 
 let devServer: ChildProcess | null = null
+/** Голый HTML/CSS/JS без сборки — раздаётся напрямую, без интерпретатора и без дочернего процесса. */
+let staticServer: http.Server | null = null
 let serverUrl: string | null = null
 let currentProjectId: string | null = null
 let logs: string[] = []
@@ -101,6 +104,10 @@ export function stopPreview(): void {
     killTree(devServer)
     devServer = null
   }
+  if (staticServer) {
+    staticServer.close()
+    staticServer = null
+  }
   serverUrl = null
   currentProjectId = null
 
@@ -154,7 +161,7 @@ export function openPreviewWindow(): { success: boolean; error?: string } {
   return { success: true }
 }
 
-type Stack = 'node' | 'python' | 'php'
+export type Stack = 'node' | 'python' | 'php' | 'static'
 
 interface LaunchPlan {
   cmd: string
@@ -165,12 +172,14 @@ interface LaunchPlan {
 }
 
 /**
- * Определяем стек по характерным файлам в корне папки — теми же маркерами,
- * которыми уже пользуется findManifestRoots() в command-runner.ts (Тестер).
- * "static" (голый index.html без манифеста) сюда осознанно не входит — под
- * него нет отдельного запуска, это задел на будущее.
+ * Определяем стек по характерным файлам в корне папки — теми же манифестами,
+ * которыми уже пользуется findManifestRoots() в command-runner.ts (Тестер),
+ * плюс "static" — голый index.html без сборки и без интерпретатора (частый
+ * дешёвый заказ на Kwork/FL.ru: лендинг на чистом HTML/CSS/JS). Проверяем
+ * его последним: если рядом есть package.json/composer.json/manage.py и
+ * т.п., это не самостоятельный статичный сайт, а часть более сложного стека.
  */
-function detectStack(dir: string): Stack | null {
+export function detectStack(dir: string): Stack | null {
   if (fs.existsSync(path.join(dir, 'package.json'))) return 'node'
   if (fs.existsSync(path.join(dir, 'composer.json')) || fs.existsSync(path.join(dir, 'artisan'))) return 'php'
   if (
@@ -180,7 +189,67 @@ function detectStack(dir: string): Stack | null {
   ) {
     return 'python'
   }
+  if (fs.existsSync(path.join(dir, 'index.html'))) return 'static'
   return null
+}
+
+const STATIC_MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+}
+
+/**
+ * Раздаёт папку как есть — без сборки, без интерпретатора, без дочернего
+ * процесса: `http.createServer` тут же, в основном процессе. Это надёжнее и
+ * проще, чем искать на машине `npx serve`/`python -m http.server`, которых
+ * может не быть, а сама задача — просто отдать файлы.
+ */
+function startStaticServer(dir: string, port: number): Promise<http.Server> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      try {
+        let urlPath = decodeURIComponent((req.url ?? '/').split('?')[0])
+        if (urlPath.endsWith('/')) urlPath += 'index.html'
+        const full = path.join(dir, urlPath)
+        const rel = path.relative(dir, full)
+        // Не выпускаем чтение файлов за пределы папки — req.url приходит от клиента.
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          res.writeHead(403)
+          res.end('Forbidden')
+          return
+        }
+        fs.readFile(full, (err, data) => {
+          if (err) {
+            res.writeHead(404)
+            res.end('Not found')
+            return
+          }
+          const ext = path.extname(full).toLowerCase()
+          res.writeHead(200, { 'Content-Type': STATIC_MIME[ext] ?? 'application/octet-stream' })
+          res.end(data)
+        })
+      } catch {
+        res.writeHead(500)
+        res.end('Internal error')
+      }
+    })
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', () => resolve(server))
+  })
 }
 
 function isViteProject(dir: string): boolean {
@@ -302,20 +371,26 @@ function phpLaunchPlan(dir: string, port: number): LaunchPlan {
   }
 }
 
-/** Порт бэкенда сознательно другой, чем у фронтенда (8000 vs 8001) — иначе Python/PHP на обеих ролях столкнутся портами. */
+/**
+ * Порт бэкенда сознательно другой, чем у фронтенда (8000 vs 8001) — иначе
+ * Python/PHP на обеих ролях столкнутся портами. "static" сюда не попадает —
+ * см. findBackendDir: голая папка с index.html не может служить API.
+ */
 function backendLaunchPlan(dir: string, stack: Stack): LaunchPlan | { error: string } {
   if (stack === 'node') return nodeBackendLaunchPlan(dir)
   if (stack === 'python') return pythonLaunchPlan(dir, 8001)
-  return phpLaunchPlan(dir, 8001)
+  if (stack === 'php') return phpLaunchPlan(dir, 8001)
+  return { error: 'Статичная папка не может быть бэкендом' }
 }
 
 /**
  * Вторая папка с манифестом рядом с той, что выбрана как фронтенд — тем же
  * findManifestRoots(), которым уже пользуется автопроверка Тестера и
- * автоопределение самого feDir выше.
+ * автоопределение самого feDir выше. "static" исключён явно: голый
+ * index.html — не API, ему нечего поднимать в роли бэкенда.
  */
 function findBackendDir(feDir: string): string | null {
-  return findManifestRoots().find((dir) => dir !== feDir && detectStack(dir) !== null) ?? null
+  return findManifestRoots().find((dir) => dir !== feDir && ['node', 'python', 'php'].includes(detectStack(dir) ?? '')) ?? null
 }
 
 /**
@@ -456,7 +531,7 @@ export interface PreviewStartOutcome {
  * автозапуск при старте приложения (см. main.ts), а не только кнопка «Старт».
  */
 export async function startPreview(projectPath: string): Promise<PreviewStartOutcome> {
-  if (devServer && serverUrl) {
+  if ((devServer || staticServer) && serverUrl) {
     return { success: true, url: serverUrl, alreadyRunning: true }
   }
 
@@ -496,6 +571,21 @@ export async function startPreview(projectPath: string): Promise<PreviewStartOut
       url: null,
       error: 'Не распознали стек: нет package.json, composer.json/artisan, requirements.txt/pyproject.toml/manage.py',
     }
+  }
+
+  if (stack === 'static') {
+    logs = []
+    startBackend(feDir)
+    const port = 4321
+    try {
+      staticServer = await startStaticServer(feDir, port)
+    } catch (e) {
+      return { success: false, url: null, error: `Не удалось поднять сервер: ${(e as Error).message}` }
+    }
+    pushLog(`[статический сервер] раздаю ${feDir}`)
+    serverUrl = `http://127.0.0.1:${port}`
+    currentProjectId = getActiveProjectId()
+    return { success: true, url: serverUrl, alreadyRunning: false }
   }
 
   const plan = stack === 'node' ? nodeFrontendLaunchPlan(feDir) : stack === 'python' ? pythonLaunchPlan(feDir, 8000) : phpLaunchPlan(feDir, 8000)
@@ -550,7 +640,7 @@ export function registerLivePreviewIPC(): void {
     return { success: true }
   })
 
-  ipcMain.handle('preview:getUrl', () => ({ url: devServer ? serverUrl : null }))
+  ipcMain.handle('preview:getUrl', () => ({ url: devServer || staticServer ? serverUrl : null }))
   ipcMain.handle('preview:getLogs', () => ({ logs: [...logs] }))
   ipcMain.handle('preview:openWindow', () => openPreviewWindow())
 

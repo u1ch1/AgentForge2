@@ -18,6 +18,7 @@ import {
 import { runChecks, type CheckReport } from './command-runner'
 import { stopPreviewForProject } from './live-preview'
 import { applyScaffold } from './scaffold'
+import { matchTaskTemplate } from './task-templates'
 import {
   runRuntimeCheck,
   stopRuntimeCheck,
@@ -444,7 +445,9 @@ async function doPlanning(goal: string): Promise<boolean> {
     keywords: goal.split(/\s+/),
     projectId: run?.projectId,
   })
-  const extra = context ? `${context}\n\n${PLAN_INSTRUCTION}` : PLAN_INSTRUCTION
+  const template = matchTaskTemplate(goal)
+  if (template) log('info', `Использован типовой план: ${template.name}`, 'admin')
+  const extra = [context, template?.outline, PLAN_INSTRUCTION].filter(Boolean).join('\n\n')
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     const reply = await callAgent('admin', goal, extra, false)
