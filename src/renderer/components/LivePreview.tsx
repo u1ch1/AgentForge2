@@ -17,9 +17,13 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Конвейер кладёт проект в корень папки, а не в frontend/ — это раскладка
-  // из старых шаблонов. Поле остаётся редактируемым для таких проектов.
-  const [projectPath, setProjectPath] = useState('.')
+  // Свободный ввод пути раньше был единственным способом запустить «Просмотр» —
+  // пустое поле с точкой по умолчанию было непонятно, а набирать "frontend"/
+  // "backend" каждый раз неудобно. Теперь это кнопки под частые раскладки,
+  // а свою папку (нестандартные шаблоны — конвейер кладёт код в корень, а не
+  // в frontend/) можно ввести через «Другая папка».
+  const [customPath, setCustomPath] = useState('')
+  const [showCustom, setShowCustom] = useState(false)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
   const webviewRef = useRef<HTMLWebViewElement>(null)
@@ -70,12 +74,12 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
     }
   }, [isRunning, url])
 
-  const start = async () => {
+  const start = async (path: string) => {
     setError(null)
     setStarting(true)
     setConsoleLines([])
     try {
-      const res = await window.electronAPI.previewStart(projectPath)
+      const res = await window.electronAPI.previewStart(path)
       if (res.success && res.url) {
         setUrl(res.url)
         setIsRunning(true)
@@ -102,22 +106,43 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <div style={{ display: 'flex', gap: '4px', padding: '8px' }}>
-        <input
-          value={projectPath}
-          onChange={(e) => setProjectPath(e.target.value)}
-          placeholder="папка с package.json — «.» это корень проекта"
-          disabled={isRunning}
-          style={{ ...input, flex: 1, fontFamily: fonts.mono, opacity: isRunning ? 0.55 : 1 }}
-        />
         {!isRunning ? (
-          <button
-            onClick={() => void start()}
-            disabled={starting}
-            style={starting ? { ...button, opacity: 0.6, cursor: 'wait' } : buttonPrimary}
-          >
-            <Icon name="play" size={11} />
-            {starting ? 'Запуск…' : 'Старт'}
-          </button>
+          <>
+            <button
+              onClick={() => void start('frontend')}
+              disabled={starting}
+              title="Запустить frontend/"
+              style={starting ? { ...button, flex: 1, opacity: 0.6, cursor: 'wait' } : { ...buttonPrimary, flex: 1 }}
+            >
+              <Icon name="layout" size={11} />
+              Frontend
+            </button>
+            <button
+              onClick={() => void start('backend')}
+              disabled={starting}
+              title="Запустить backend/"
+              style={starting ? { ...button, flex: 1, opacity: 0.6, cursor: 'wait' } : { ...buttonPrimary, flex: 1 }}
+            >
+              <Icon name="server" size={11} />
+              Backend
+            </button>
+            <button
+              onClick={() => void start('.')}
+              disabled={starting}
+              title="Запустить из корня проекта — для шаблонов без разбивки на подпапки"
+              style={starting ? { ...button, opacity: 0.6, cursor: 'wait' } : button}
+            >
+              <Icon name="folder" size={11} />
+              Корень
+            </button>
+            <button
+              onClick={() => setShowCustom((v) => !v)}
+              title="Своя папка"
+              style={{ ...button, width: '28px', padding: 0, color: showCustom ? ps.accent : ps.textDim }}
+            >
+              <Icon name="terminal" size={12} />
+            </button>
+          </>
         ) : (
           <>
             <button
@@ -149,6 +174,25 @@ export default function LivePreview({ pipelineBusy }: LivePreviewProps) {
           </>
         )}
       </div>
+
+      {showCustom && !isRunning && (
+        <div style={{ display: 'flex', gap: '4px', padding: '0 8px 8px' }}>
+          <input
+            value={customPath}
+            onChange={(e) => setCustomPath(e.target.value)}
+            placeholder="своя папка, напр. apps/web — «.» это корень проекта"
+            style={{ ...input, flex: 1, fontFamily: fonts.mono }}
+          />
+          <button
+            onClick={() => void start(customPath.trim() || '.')}
+            disabled={starting}
+            style={starting ? { ...button, opacity: 0.6, cursor: 'wait' } : buttonPrimary}
+          >
+            <Icon name="play" size={11} />
+            {starting ? 'Запуск…' : 'Старт'}
+          </button>
+        </div>
+      )}
 
       {error && (
         <div style={{ margin: '0 8px 8px' }}>
