@@ -6,15 +6,18 @@ import { FRONTEND_SCAFFOLD, BACKEND_SCAFFOLD, PYTHON_BACKEND_SCAFFOLD } from './
 
 /**
  * Бэкенд может быть на трёх разных стеках — угадываем по тексту, который сам
- * же Admin написал в run.stack. PHP/Laravel сюда осознанно не входит: чтобы
- * дать рабочий каркас Laravel-проекта, нужно воспроизвести autoloading через
- * composer.json (PSR-4), bootstrap/app.php и структуру artisan — слишком
- * легко ошибиться в файле, который потом никто не проверит на реальном PHP
- * (на машине разработки его просто нет), лучше пусть воркер соберёт его сам
- * обычным `composer create-project`, чем получит от нас нерабочий скелет.
+ * же Admin написал в run.stack. PHP/Laravel и WordPress сюда осознанно не
+ * входят: чтобы дать рабочий каркас Laravel-проекта, нужно воспроизвести
+ * autoloading через composer.json (PSR-4), bootstrap/app.php и структуру
+ * artisan — слишком легко ошибиться в файле, который потом никто не
+ * проверит на реальном PHP (на машине разработки его просто нет), лучше
+ * пусть воркер соберёт его сам обычным `composer create-project`, чем
+ * получит от нас нерабочий скелет. Для WordPress ситуация ещё жёстче: там
+ * нет не только PHP, но и самого ядра WordPress с MySQL, чтобы вообще было
+ * куда класть тему/плагин — Vite/Express-каркас тут просто нерелевантен.
  */
 export function pickBackendTemplate(stackText: string): Record<string, string> | null {
-  if (/php|laravel/i.test(stackText)) return null
+  if (/php|laravel|wordpress|вордпресс/i.test(stackText)) return null
   if (/fastapi|django|flask|python/i.test(stackText)) return PYTHON_BACKEND_SCAFFOLD
   return BACKEND_SCAFFOLD
 }
