@@ -235,6 +235,17 @@ function planChecksIn(dir: string): CheckStep[] {
     if (scripts.build) {
       steps.push({ label: 'Сборка', command: 'npm', args: ['run', 'build'] })
     }
+    if (scripts.lint) {
+      // Не блокирует приёмку: стиль и предупреждения — не повод переделывать
+      // рабочий код, но воркер увидит их в сводке и может поправить попутно.
+      steps.push({
+        label: 'Линтер',
+        command: 'npm',
+        args: ['run', 'lint'],
+        optional: true,
+        timeoutMs: 2 * 60 * 1000,
+      })
+    }
     if (scripts.test) {
       // Тесты часто настроены в watch-режиме и никогда не завершаются сами —
       // поэтому короткий таймаут, а провал не блокирует приёмку.
@@ -266,6 +277,17 @@ function planChecksIn(dir: string): CheckStep[] {
       command: 'python',
       args: ['-m', 'compileall', '-q', '.'],
     })
+    // Только если ruff сам в requirements.txt — не навязываем зависимость,
+    // которую воркер не выбирал.
+    if (hasRequirements && /^ruff\b/m.test(fs.readFileSync(path.join(dir, 'requirements.txt'), 'utf-8'))) {
+      steps.push({
+        label: 'Линтер',
+        command: 'python',
+        args: ['-m', 'ruff', 'check', '.'],
+        optional: true,
+        timeoutMs: 2 * 60 * 1000,
+      })
+    }
     if (fs.existsSync(path.join(dir, 'tests'))) {
       steps.push({
         label: 'Тесты',
